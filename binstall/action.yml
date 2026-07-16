@@ -1,0 +1,50 @@
+name: "cargo-binstall"
+description: "Install cargo-binstall from a pinned prebuilt release, and optionally install crates through it."
+inputs:
+  version:
+    description: "cargo-binstall version tag (without leading v). Pinned by default; supply-chain safety."
+    default: "1.21.0"
+  crates:
+    description: "Space/comma-separated crates to install via binstall (e.g. 'cargo-audit cargo-deny')."
+    default: ""
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_CRATES: ${{ inputs.crates }}
+      run: |
+        set -euo pipefail
+
+        case "$INPUT_VERSION" in
+          *[!A-Za-z0-9._-]*) echo "invalid version: $INPUT_VERSION"; exit 1 ;;
+        esac
+
+        if ! command -v cargo-binstall >/dev/null; then
+          case "$(uname -s)-$(uname -m)" in
+            Linux-x86_64|Linux-amd64)  slug=x86_64-unknown-linux-musl; ext=tgz ;;
+            Linux-aarch64|Linux-arm64) slug=aarch64-unknown-linux-musl; ext=tgz ;;
+            Darwin-*)                  slug=universal-apple-darwin; ext=zip ;;
+            *) echo "unsupported platform: $(uname -s)-$(uname -m)"; exit 1 ;;
+          esac
+          dest="$HOME/.cargo/bin"; mkdir -p "$dest"
+          url="https://github.com/cargo-bins/cargo-binstall/releases/download/v$INPUT_VERSION/cargo-binstall-$slug.$ext"
+          if [ "$ext" = zip ]; then
+            tmp=$(mktemp -d); curl -fsSL "$url" -o "$tmp/b.zip"; unzip -q "$tmp/b.zip" -d "$dest" cargo-binstall
+          else
+            curl -fsSL "$url" | tar -xz -C "$dest" cargo-binstall
+          fi
+          echo "$dest" >> "$GITHUB_PATH"
+        fi
+        cargo binstall -V
+
+        crates="${INPUT_CRATES//,/ }"
+        if [ -n "${crates// /}" ]; then
+          for c in $crates; do
+            case "$c" in
+              *[!A-Za-z0-9._@+-]*) echo "invalid crate spec: $c"; exit 1 ;;
+            esac
+          done
+          cargo binstall --no-confirm --disable-telemetry $crates
+        fi

@@ -14,6 +14,11 @@ runs:
   using: composite
   steps:
     - shell: bash
+      env:
+        # Inputs come in as env, never interpolated into the script body.
+        INPUT_TOOLCHAIN: ${{ inputs.toolchain }}
+        INPUT_TARGETS: ${{ inputs.targets }}
+        INPUT_COMPONENTS: ${{ inputs.components }}
       run: |
         set -euo pipefail
 
@@ -25,10 +30,9 @@ runs:
           export PATH="$HOME/.cargo/bin:$PATH"
         fi
 
-        tc='${{ inputs.toolchain }}'
-        if [ -n "$tc" ]; then
-          rustup toolchain install "$tc" --profile minimal
-          rustup default "$tc"
+        if [ -n "$INPUT_TOOLCHAIN" ]; then
+          rustup toolchain install "$INPUT_TOOLCHAIN" --profile minimal
+          rustup default "$INPUT_TOOLCHAIN"
         elif [ -f rust-toolchain.toml ] || [ -f rust-toolchain ]; then
           # rustup auto-installs the pinned toolchain on first use.
           rustup show active-toolchain || rustup toolchain install
@@ -37,9 +41,8 @@ runs:
           rustup default stable
         fi
 
-        norm() { echo "$1" | tr ',' ' '; }
-        for t in $(norm '${{ inputs.targets }}'); do rustup target add "$t"; done
-        for c in $(norm '${{ inputs.components }}'); do rustup component add "$c"; done
+        for t in ${INPUT_TARGETS//,/ }; do rustup target add "$t"; done
+        for c in ${INPUT_COMPONENTS//,/ }; do rustup component add "$c"; done
 
         rustc --version
         cargo --version

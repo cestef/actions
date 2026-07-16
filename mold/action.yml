@@ -11,13 +11,15 @@ runs:
   using: composite
   steps:
     - shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_RUSTFLAGS: ${{ inputs.rustflags }}
       run: |
         set -euo pipefail
         if [ "$(uname -s)" != "Linux" ]; then
           echo "mold: non-Linux host, skipping."
           exit 0
         fi
-        ver='${{ inputs.version }}'
 
         if ! command -v mold >/dev/null; then
           case "$(uname -m)" in
@@ -26,14 +28,14 @@ runs:
             *) echo "unsupported arch: $(uname -m)"; exit 1 ;;
           esac
           dest="$HOME/.local"; mkdir -p "$dest"
-          curl -fsSL "https://github.com/rui314/mold/releases/download/v$ver/mold-$ver-$arch-linux.tar.gz" \
+          curl -fsSL "https://github.com/rui314/mold/releases/download/v$INPUT_VERSION/mold-$INPUT_VERSION-$arch-linux.tar.gz" \
             | tar -xz --strip-components=1 -C "$dest"
           echo "$dest/bin" >> "$GITHUB_PATH"
           export PATH="$dest/bin:$PATH"
         fi
         mold --version
 
-        if [ '${{ inputs.rustflags }}' = "true" ]; then
+        if [ "$INPUT_RUSTFLAGS" = "true" ]; then
           # Append, preserving any RUSTFLAGS already exported.
           echo "RUSTFLAGS=${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-fuse-ld=mold" >> "$GITHUB_ENV"
         fi

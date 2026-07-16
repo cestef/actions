@@ -87,6 +87,79 @@ Installs [cargo-nextest](https://nexte.st) and, optionally, runs the suite.
     args: "--workspace --no-tests warn"
 ```
 
+## musl
+
+Installs the musl C cross toolchain (`musl-gcc`, perl, make) for static builds, via
+apt or apk. Idempotent.
+
+```yaml
+- uses: https://codeberg.org/cstef/actions/musl@main
+  with:
+    packages: ""               # extra packages
+```
+
+## cargo-cache
+
+Persists `~/.cargo` registry + git downloads to an S3-compatible bucket, keyed on
+`Cargo.lock`. Complements sccache (which caches compiler output, not crate downloads),
+so ephemeral runners stop re-fetching crates. Call it twice: `restore` before the build,
+`save` after.
+
+```yaml
+- uses: https://codeberg.org/cstef/actions/cargo-cache@main   # restore (default)
+  with:
+    bucket: my-cargo-cache
+    endpoint: ${{ secrets.R2_ENDPOINT }}
+    access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+    secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+# ... build ...
+- uses: https://codeberg.org/cstef/actions/cargo-cache@main
+  with:
+    mode: save
+    bucket: my-cargo-cache
+    endpoint: ${{ secrets.R2_ENDPOINT }}
+    access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+    secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+```
+
+Trust: anyone with bucket write access can influence what lands in `~/.cargo`, so treat
+the bucket as trusted (same model as the sccache bucket). Restores reject tar members
+with absolute paths or `..` traversal.
+
+## binstall
+
+Installs [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) from a pinned
+release, and optionally installs crates through it.
+
+```yaml
+- uses: https://codeberg.org/cstef/actions/binstall@main
+  with:
+    version: "1.21.0"
+    crates: "cargo-audit cargo-deny"
+```
+
+## mem-diagnostics
+
+Dumps detailed memory forensics (cgroup v2/v1 usage vs cap, peak/limit %, OOM events,
+`memory.stat` breakdown, system meminfo, top-RSS processes). Run it `if: failure()` on
+memory-capped runners.
+
+```yaml
+- uses: https://codeberg.org/cstef/actions/mem-diagnostics@main
+  if: failure()
+  with:
+    processes: "true"
+    top: "10"
+    dmesg: "false"
+```
+
+## Security
+
+Inputs are passed via the environment, never interpolated into the shell body (no script
+injection). Binaries are fetched over TLS from pinned release versions. sccache writes its
+backend env with the random-delimiter heredoc form so values can't inject extra
+`GITHUB_ENV` entries. cargo-cache validates tar members before extracting into `~/.cargo`.
+
 ## License
 
 MIT.

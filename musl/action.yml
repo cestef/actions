@@ -1,0 +1,32 @@
+name: "musl toolchain"
+description: "Install the musl C cross toolchain (musl-gcc, perl, make) for static Rust builds. apt or apk, idempotent."
+inputs:
+  packages:
+    description: "Extra packages to install alongside the musl toolchain."
+    default: ""
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        INPUT_PACKAGES: ${{ inputs.packages }}
+      run: |
+        set -euo pipefail
+        if command -v musl-gcc >/dev/null; then
+          echo "musl-gcc already present"
+          exit 0
+        fi
+        # Only well-formed package names, to keep the input off the command line as code.
+        for p in $INPUT_PACKAGES; do
+          case "$p" in
+            *[!A-Za-z0-9._+-]*) echo "invalid package name: $p"; exit 1 ;;
+          esac
+        done
+        if command -v apt-get >/dev/null; then
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools perl make $INPUT_PACKAGES
+        elif command -v apk >/dev/null; then
+          apk add --no-cache musl-dev gcc perl make $INPUT_PACKAGES
+        else
+          echo "no apt-get or apk available"; exit 1
+        fi

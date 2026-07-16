@@ -1,0 +1,107 @@
+name: "cargo registry cache (S3/R2)"
+description: "Persist ~/.cargo registry + git downloads to an S3-compatible bucket, keyed on Cargo.lock. Complements sccache (which caches compiler output, not crate downloads) so ephemeral runners stop re-fetching crates. Call once with mode: restore before the build, once with mode: save after. Trust: anyone with bucket write access can influence what lands in ~/.cargo, so treat the bucket as trusted (same model as the sccache bucket)."
+inputs:
+  mode:
+    description: "restore (default) or save."
+    default: "restore"
+  bucket:
+    description: "Bucket name."
+    required: true
+  endpoint:
+    description: "S3 endpoint URL (e.g. https://<account>.r2.cloudflarestorage.com). Omit for AWS S3."
+    default: ""
+  access-key-id:
+    required: true
+  secret-access-key:
+    required: true
+  region:
+    description: "S3 region. R2 wants 'auto'."
+    default: "auto"
+  prefix:
+    description: "Key prefix within the bucket."
+    default: "cargo-cache"
+  key:
+    description: "Cache key override. Default: a hash of Cargo.lock."
+    default: ""
+  paths:
+    description: "Space-separated dirs to cache, relative to $HOME."
+    default: ".cargo/registry/index .cargo/registry/cache .cargo/git/db"
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_BUCKET: ${{ inputs.bucket }}
+        INPUT_ENDPOINT: ${{ inputs.endpoint }}
+        INPUT_ACCESS_KEY_ID: ${{ inputs.access-key-id }}
+        INPUT_SECRET_ACCESS_KEY: ${{ inputs.secret-access-key }}
+        INPUT_REGION: ${{ inputs.region }}
+        INPUT_PREFIX: ${{ inputs.prefix }}
+        INPUT_KEY: ${{ inputs.key }}
+        INPUT_PATHS: ${{ inputs.paths }}
+      run: |
+        set -euo pipefail
+
+        if ! command -v s5cmd >/dev/null; then
+          case "$(uname -m)" in
+            x86_64|amd64)  sl=Linux-64bit ;;
+            aarch64|arm64) sl=Linux-arm64 ;;
+            *) echo "unsupported arch: $(uname -m)"; exit 1 ;;
+          esac
+          ver=2.3.0
+          dest="$HOME/.local/bin"; mkdir -p "$dest"
+          curl -fsSL "https://github.com/peak/s5cmd/releases/download/v$ver/s5cmd_${ver}_${sl}.tar.gz" \
+            | tar -xz -C "$dest" s5cmd
+          echo "$dest" >> "$GITHUB_PATH"
+          export PATH="$dest:$PATH"
+        fi
+
+        export AWS_ACCESS_KEY_ID="$INPUT_ACCESS_KEY_ID"
+        export AWS_SECRET_ACCESS_KEY="$INPUT_SECRET_ACCESS_KEY"
+        export AWS_REGION="$INPUT_REGION" AWS_DEFAULT_REGION="$INPUT_REGION"
+        s5() {
+          if [ -n "$INPUT_ENDPOINT" ]; then
+            s5cmd --endpoint-url "$INPUT_ENDPOINT" "$@"
+          else
+            s5cmd "$@"
+          fi
+        }
+
+        key="$INPUT_KEY"
+        if [ -z "$key" ]; then
+          if [ -f Cargo.lock ]; then key=$(sha256sum Cargo.lock | cut -c1-16); else key=nolock; fi
+        fi
+        obj="s3://$INPUT_BUCKET/$INPUT_PREFIX/cargo-$key.tar.gz"
+        tmp="$(mktemp -d)/cargo-cache.tar.gz"
+
+        if [ "$INPUT_MODE" = save ]; then
+          # Immutable key: skip the upload if this cache already exists.
+          if s5 ls "$obj" >/dev/null 2>&1; then
+            echo "cargo-cache: $obj already present, skipping save"
+            exit 0
+          fi
+          present=""
+          for p in $INPUT_PATHS; do
+            [ -e "$HOME/$p" ] && present="$present $p"
+          done
+          if [ -z "$present" ]; then
+            echo "cargo-cache: nothing to save"
+            exit 0
+          fi
+          tar -C "$HOME" -czf "$tmp" $present
+          s5 cp "$tmp" "$obj"
+          echo "cargo-cache: saved $obj ($(du -h "$tmp" | cut -f1))"
+        else
+          if s5 cp "$obj" "$tmp" >/dev/null 2>&1; then
+            # Reject absolute paths and `..` traversal before extracting into $HOME.
+            if tar -tzf "$tmp" | grep -qE '^/|(^|/)\.\.(/|$)'; then
+              echo "cargo-cache: refusing cache with unsafe tar members"
+              exit 0
+            fi
+            tar -C "$HOME" --no-same-owner -xzf "$tmp"
+            echo "cargo-cache: restored $obj"
+          else
+            echo "cargo-cache: miss ($obj)"
+          fi
+        fi

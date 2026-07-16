@@ -26,9 +26,16 @@ runs:
   using: composite
   steps:
     - shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_BUCKET: ${{ inputs.bucket }}
+        INPUT_ENDPOINT: ${{ inputs.endpoint }}
+        INPUT_REGION: ${{ inputs.region }}
+        INPUT_KEY_PREFIX: ${{ inputs.key-prefix }}
+        INPUT_ACCESS_KEY_ID: ${{ inputs.access-key-id }}
+        INPUT_SECRET_ACCESS_KEY: ${{ inputs.secret-access-key }}
       run: |
         set -euo pipefail
-        ver='${{ inputs.version }}'
 
         if ! command -v sccache >/dev/null; then
           case "$(uname -m)" in
@@ -41,27 +48,28 @@ runs:
             Darwin) slug="$arch-apple-darwin" ;;
             *) echo "unsupported os: $(uname -s)"; exit 1 ;;
           esac
+          case "$INPUT_VERSION" in
+            *[!A-Za-z0-9._-]*) echo "invalid version: $INPUT_VERSION"; exit 1 ;;
+          esac
           dest="$HOME/.cargo/bin"; mkdir -p "$dest"
-          curl -fsSL "https://github.com/mozilla/sccache/releases/download/$ver/sccache-$ver-$slug.tar.gz" \
-            | tar -xz --strip-components=1 -C "$dest" "sccache-$ver-$slug/sccache"
+          curl -fsSL "https://github.com/mozilla/sccache/releases/download/$INPUT_VERSION/sccache-$INPUT_VERSION-$slug.tar.gz" \
+            | tar -xz --strip-components=1 -C "$dest" "sccache-$INPUT_VERSION-$slug/sccache"
           echo "$dest" >> "$GITHUB_PATH"
         fi
         sccache --version
 
-        # Wire the backend for every later step. sccache reads AWS_* from the env.
-        {
-          echo "RUSTC_WRAPPER=sccache"
-          echo "SCCACHE_BUCKET=${{ inputs.bucket }}"
-          echo "SCCACHE_REGION=${{ inputs.region }}"
-          echo "AWS_ACCESS_KEY_ID=${{ inputs.access-key-id }}"
-          echo "AWS_SECRET_ACCESS_KEY=${{ inputs.secret-access-key }}"
-          # sccache can't cache incremental artifacts, so keep cargo from making them.
-          echo "CARGO_INCREMENTAL=0"
-        } >> "$GITHUB_ENV"
-
-        if [ -n '${{ inputs.endpoint }}' ]; then
-          echo "SCCACHE_ENDPOINT=${{ inputs.endpoint }}" >> "$GITHUB_ENV"
-        fi
-        if [ -n '${{ inputs.key-prefix }}' ]; then
-          echo "SCCACHE_S3_KEY_PREFIX=${{ inputs.key-prefix }}" >> "$GITHUB_ENV"
-        fi
+        # Persist the backend for later steps. Values are written via a random-delimiter
+        # heredoc so a stray newline can't inject extra GITHUB_ENV entries.
+        emit() {  # emit NAME VALUE
+          local d="__ghenv_$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+          { printf '%s<<%s\n' "$1" "$d"; printf '%s\n' "$2"; printf '%s\n' "$d"; } >> "$GITHUB_ENV"
+        }
+        echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+        # sccache can't cache incremental artifacts, so keep cargo from making them.
+        echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
+        emit SCCACHE_BUCKET "$INPUT_BUCKET"
+        emit SCCACHE_REGION "$INPUT_REGION"
+        emit AWS_ACCESS_KEY_ID "$INPUT_ACCESS_KEY_ID"
+        emit AWS_SECRET_ACCESS_KEY "$INPUT_SECRET_ACCESS_KEY"
+        if [ -n "$INPUT_ENDPOINT" ]; then emit SCCACHE_ENDPOINT "$INPUT_ENDPOINT"; fi
+        if [ -n "$INPUT_KEY_PREFIX" ]; then emit SCCACHE_S3_KEY_PREFIX "$INPUT_KEY_PREFIX"; fi

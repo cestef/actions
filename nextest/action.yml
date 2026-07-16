@@ -14,6 +14,10 @@ runs:
   using: composite
   steps:
     - shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_RUN: ${{ inputs.run }}
+        INPUT_ARGS: ${{ inputs.args }}
       run: |
         set -euo pipefail
 
@@ -25,12 +29,16 @@ runs:
             *) echo "unsupported platform: $(uname -s)-$(uname -m)"; exit 1 ;;
           esac
           dest="$HOME/.cargo/bin"; mkdir -p "$dest"
-          curl -fsSL "https://get.nexte.st/${{ inputs.version }}/$slug" \
+          # Only the version tag flows into the URL; validate it's a plausible channel/tag.
+          case "$INPUT_VERSION" in
+            *[!A-Za-z0-9._-]*) echo "invalid version: $INPUT_VERSION"; exit 1 ;;
+          esac
+          curl -fsSL "https://get.nexte.st/$INPUT_VERSION/$slug" \
             | tar -xz -C "$dest" cargo-nextest
           echo "$dest" >> "$GITHUB_PATH"
         fi
         cargo nextest --version
 
-        if [ '${{ inputs.run }}' = "true" ]; then
-          cargo nextest run ${{ inputs.args }}
+        if [ "$INPUT_RUN" = "true" ]; then
+          cargo nextest run $INPUT_ARGS
         fi
