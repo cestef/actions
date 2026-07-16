@@ -1,0 +1,45 @@
+name: "Rust toolchain"
+description: "Install rustup and a Rust toolchain, with optional targets and components. Idempotent and multiplatform."
+inputs:
+  toolchain:
+    description: "Toolchain to install (e.g. stable, 1.90.0). Empty honors rust-toolchain.toml, else stable."
+    default: ""
+  targets:
+    description: "Space/comma-separated target triples to add (e.g. 'x86_64-unknown-linux-musl aarch64-unknown-linux-gnu')."
+    default: ""
+  components:
+    description: "Space/comma-separated components to add (e.g. 'clippy rustfmt')."
+    default: ""
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+
+        # rustup: install if missing, then make it usable in this step and the next.
+        if ! command -v rustup >/dev/null; then
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain none --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+        fi
+
+        tc='${{ inputs.toolchain }}'
+        if [ -n "$tc" ]; then
+          rustup toolchain install "$tc" --profile minimal
+          rustup default "$tc"
+        elif [ -f rust-toolchain.toml ] || [ -f rust-toolchain ]; then
+          # rustup auto-installs the pinned toolchain on first use.
+          rustup show active-toolchain || rustup toolchain install
+        else
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+        fi
+
+        norm() { echo "$1" | tr ',' ' '; }
+        for t in $(norm '${{ inputs.targets }}'); do rustup target add "$t"; done
+        for c in $(norm '${{ inputs.components }}'); do rustup component add "$c"; done
+
+        rustc --version
+        cargo --version

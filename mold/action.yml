@@ -1,0 +1,39 @@
+name: "mold linker"
+description: "Install the mold linker from a prebuilt release (fast, no apt) and optionally wire it into RUSTFLAGS. Linux only."
+inputs:
+  version:
+    description: "mold version, without the leading v."
+    default: "2.41.0"
+  rustflags:
+    description: "Append '-C link-arg=-fuse-ld=mold' to RUSTFLAGS for later steps. Set false if you manage RUSTFLAGS yourself (a job-level env: RUSTFLAGS overrides this)."
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+        if [ "$(uname -s)" != "Linux" ]; then
+          echo "mold: non-Linux host, skipping."
+          exit 0
+        fi
+        ver='${{ inputs.version }}'
+
+        if ! command -v mold >/dev/null; then
+          case "$(uname -m)" in
+            aarch64|arm64) arch=aarch64 ;;
+            x86_64|amd64)  arch=x86_64 ;;
+            *) echo "unsupported arch: $(uname -m)"; exit 1 ;;
+          esac
+          dest="$HOME/.local"; mkdir -p "$dest"
+          curl -fsSL "https://github.com/rui314/mold/releases/download/v$ver/mold-$ver-$arch-linux.tar.gz" \
+            | tar -xz --strip-components=1 -C "$dest"
+          echo "$dest/bin" >> "$GITHUB_PATH"
+          export PATH="$dest/bin:$PATH"
+        fi
+        mold --version
+
+        if [ '${{ inputs.rustflags }}' = "true" ]; then
+          # Append, preserving any RUSTFLAGS already exported.
+          echo "RUSTFLAGS=${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-fuse-ld=mold" >> "$GITHUB_ENV"
+        fi

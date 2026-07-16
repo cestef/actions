@@ -1,0 +1,36 @@
+name: "cargo-nextest"
+description: "Install cargo-nextest (adaptive) and optionally run the suite."
+inputs:
+  version:
+    description: "Version channel or tag (e.g. latest, 0.9.100)."
+    default: "latest"
+  run:
+    description: "Run 'cargo nextest run' after install."
+    default: "false"
+  args:
+    description: "Args passed to 'cargo nextest run'."
+    default: "--workspace --no-tests warn"
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+
+        if ! command -v cargo-nextest >/dev/null; then
+          case "$(uname -s)-$(uname -m)" in
+            Linux-aarch64|Linux-arm64) slug=linux-arm-musl ;;
+            Linux-x86_64|Linux-amd64)  slug=linux-musl ;;
+            Darwin-*)                  slug=mac ;;
+            *) echo "unsupported platform: $(uname -s)-$(uname -m)"; exit 1 ;;
+          esac
+          dest="$HOME/.cargo/bin"; mkdir -p "$dest"
+          curl -fsSL "https://get.nexte.st/${{ inputs.version }}/$slug" \
+            | tar -xz -C "$dest" cargo-nextest
+          echo "$dest" >> "$GITHUB_PATH"
+        fi
+        cargo nextest --version
+
+        if [ '${{ inputs.run }}' = "true" ]; then
+          cargo nextest run ${{ inputs.args }}
+        fi

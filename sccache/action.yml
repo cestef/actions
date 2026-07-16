@@ -1,0 +1,67 @@
+name: "sccache"
+description: "Install sccache and point it at an S3-compatible bucket (e.g. Cloudflare R2). Exports RUSTC_WRAPPER for later steps."
+inputs:
+  version:
+    description: "sccache release tag."
+    default: "v0.16.0"
+  bucket:
+    description: "Bucket name (SCCACHE_BUCKET)."
+    required: true
+  endpoint:
+    description: "S3 endpoint URL, e.g. https://<account>.r2.cloudflarestorage.com. Omit for AWS S3."
+    default: ""
+  region:
+    description: "Region (SCCACHE_REGION). R2 wants 'auto'."
+    default: "auto"
+  key-prefix:
+    description: "Optional key prefix within the bucket (SCCACHE_S3_KEY_PREFIX)."
+    default: ""
+  access-key-id:
+    description: "Access key id (AWS_ACCESS_KEY_ID)."
+    required: true
+  secret-access-key:
+    description: "Secret access key (AWS_SECRET_ACCESS_KEY)."
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+        ver='${{ inputs.version }}'
+
+        if ! command -v sccache >/dev/null; then
+          case "$(uname -m)" in
+            aarch64|arm64) arch=aarch64 ;;
+            x86_64|amd64)  arch=x86_64 ;;
+            *) echo "unsupported arch: $(uname -m)"; exit 1 ;;
+          esac
+          case "$(uname -s)" in
+            Linux)  slug="$arch-unknown-linux-musl" ;;
+            Darwin) slug="$arch-apple-darwin" ;;
+            *) echo "unsupported os: $(uname -s)"; exit 1 ;;
+          esac
+          dest="$HOME/.cargo/bin"; mkdir -p "$dest"
+          curl -fsSL "https://github.com/mozilla/sccache/releases/download/$ver/sccache-$ver-$slug.tar.gz" \
+            | tar -xz --strip-components=1 -C "$dest" "sccache-$ver-$slug/sccache"
+          echo "$dest" >> "$GITHUB_PATH"
+        fi
+        sccache --version
+
+        # Wire the backend for every later step. sccache reads AWS_* from the env.
+        {
+          echo "RUSTC_WRAPPER=sccache"
+          echo "SCCACHE_BUCKET=${{ inputs.bucket }}"
+          echo "SCCACHE_REGION=${{ inputs.region }}"
+          echo "AWS_ACCESS_KEY_ID=${{ inputs.access-key-id }}"
+          echo "AWS_SECRET_ACCESS_KEY=${{ inputs.secret-access-key }}"
+          # sccache can't cache incremental artifacts, so keep cargo from making them.
+          echo "CARGO_INCREMENTAL=0"
+        } >> "$GITHUB_ENV"
+
+        if [ -n '${{ inputs.endpoint }}' ]; then
+          echo "SCCACHE_ENDPOINT=${{ inputs.endpoint }}" >> "$GITHUB_ENV"
+        fi
+        if [ -n '${{ inputs.key-prefix }}' ]; then
+          echo "SCCACHE_S3_KEY_PREFIX=${{ inputs.key-prefix }}" >> "$GITHUB_ENV"
+        fi
