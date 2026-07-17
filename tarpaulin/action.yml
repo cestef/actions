@@ -16,10 +16,15 @@ inputs:
   fail-under:
     description: "Fail if total line coverage is below this percent. Empty = don't enforce."
     default: ""
+outputs:
+  percent:
+    description: "Total line coverage percentage (e.g. 60.4)."
+    value: ${{ steps.run.outputs.percent }}
 runs:
   using: composite
   steps:
-    - shell: bash
+    - id: run
+      shell: bash
       env:
         INPUT_VERSION: ${{ inputs.version }}
         INPUT_ARGS: ${{ inputs.args }}
@@ -54,4 +59,8 @@ runs:
         fu=""
         if [ -n "$INPUT_FAIL_UNDER" ]; then fu="--fail-under $INPUT_FAIL_UNDER"; fi
 
-        cargo tarpaulin --timeout "$INPUT_TIMEOUT" $outs $fu $INPUT_ARGS
+        # Tee so we can scrape the headline "XX.XX% coverage" into an output.
+        cargo tarpaulin --timeout "$INPUT_TIMEOUT" $outs $fu $INPUT_ARGS 2>&1 | tee /tmp/tarpaulin.out
+        pct=$(grep -oE '[0-9]+\.[0-9]+% coverage' /tmp/tarpaulin.out | tail -1 | grep -oE '^[0-9]+\.[0-9]+' || true)
+        echo "percent=${pct:-0}" >> "$GITHUB_OUTPUT"
+        echo "coverage: ${pct:-unknown}%"

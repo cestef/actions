@@ -153,6 +153,38 @@ and runs coverage. Linux only.
     fail-under: ""             # e.g. "40" to enforce a floor
 ```
 
+## coverage-report
+
+Turns a coverage percentage (e.g. from `tarpaulin`) into something useful, all
+self-hosted on an S3/R2 bucket: a shields-style **SVG badge**, a per-PR **comment**
+with the delta vs the default branch, and an optional **ratchet** gate (a PR can't drop
+coverage below the baseline minus a tolerance). The baseline lives in the bucket — the
+default branch writes it, PRs read it.
+
+```yaml
+- id: cov
+  uses: https://codeberg.org/cstef/actions/tarpaulin@main
+  with: { out: "Stdout Xml" }
+- uses: https://codeberg.org/cstef/actions/coverage-report@main
+  with:
+    percent: ${{ steps.cov.outputs.percent }}
+    bucket: my-badges              # a public bucket, for the badge URL
+    endpoint: ${{ secrets.R2_ENDPOINT }}
+    access-key-id: ${{ secrets.R2_BADGE_ACCESS_KEY_ID }}
+    secret-access-key: ${{ secrets.R2_BADGE_SECRET_ACCESS_KEY }}
+    public-url: https://<id>.r2.dev          # where the bucket is served
+    token: ${{ forge.token }}                # for the PR comment
+    server-url: ${{ github.server_url }}
+    repo: ${{ github.repository }}
+    event-name: ${{ github.event_name }}
+    ref-name: ${{ github.ref_name }}
+    pr-number: ${{ github.event.pull_request.number }}
+    ratchet: "true"
+```
+
+Badge: `![coverage](https://<id>.r2.dev/coverage.svg)`. The bucket needs write access
+scoped to the token you pass (a public R2 bucket with `wrangler r2 bucket dev-url enable`).
+
 ## mem-diagnostics
 
 Dumps detailed memory forensics (cgroup v2/v1 usage vs cap, peak/limit %, OOM events,

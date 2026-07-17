@@ -1,0 +1,162 @@
+name: "coverage report"
+description: "Turn a coverage percentage into something useful: a self-hosted SVG badge on S3/R2, a per-PR comment with the delta vs the default branch, and an optional ratchet gate. Baseline is stored in the bucket (default branch writes it, PRs read it)."
+inputs:
+  percent:
+    description: "Total coverage percentage, e.g. 60.4."
+    required: true
+  bucket:
+    description: "S3/R2 bucket for the baseline and (public) badge."
+    required: true
+  endpoint:
+    description: "S3 endpoint URL (e.g. https://<account>.r2.cloudflarestorage.com)."
+    default: ""
+  access-key-id:
+    required: true
+  secret-access-key:
+    required: true
+  region:
+    default: "auto"
+  public-url:
+    description: "Public base URL the bucket is served at (e.g. https://xxx.r2.dev), used to link the badge in the PR comment."
+    default: ""
+  token:
+    description: "Forgejo API token for posting the PR comment. No comment if empty."
+    default: ""
+  server-url:
+    description: "Forge base URL, e.g. https://codeberg.org."
+    default: ""
+  repo:
+    description: "owner/repo."
+    default: ""
+  event-name:
+    description: "push or pull_request."
+    default: ""
+  ref-name:
+    description: "Branch name of the push."
+    default: ""
+  pr-number:
+    description: "Pull-request index (for the comment)."
+    default: ""
+  default-branch:
+    default: "main"
+  ratchet:
+    description: "Fail if a PR drops coverage below (baseline - tolerance)."
+    default: "false"
+  tolerance:
+    description: "Allowed coverage drop, in percentage points."
+    default: "0.5"
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        INPUT_PERCENT: ${{ inputs.percent }}
+        INPUT_BUCKET: ${{ inputs.bucket }}
+        INPUT_ENDPOINT: ${{ inputs.endpoint }}
+        INPUT_ACCESS_KEY_ID: ${{ inputs.access-key-id }}
+        INPUT_SECRET_ACCESS_KEY: ${{ inputs.secret-access-key }}
+        INPUT_REGION: ${{ inputs.region }}
+        INPUT_PUBLIC_URL: ${{ inputs.public-url }}
+        INPUT_TOKEN: ${{ inputs.token }}
+        INPUT_SERVER_URL: ${{ inputs.server-url }}
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_EVENT_NAME: ${{ inputs.event-name }}
+        INPUT_REF_NAME: ${{ inputs.ref-name }}
+        INPUT_PR_NUMBER: ${{ inputs.pr-number }}
+        INPUT_DEFAULT_BRANCH: ${{ inputs.default-branch }}
+        INPUT_RATCHET: ${{ inputs.ratchet }}
+        INPUT_TOLERANCE: ${{ inputs.tolerance }}
+      run: |
+        set -euo pipefail
+        pct="$INPUT_PERCENT"
+
+        if ! command -v s5cmd >/dev/null; then
+          case "$(uname -m)" in
+            x86_64|amd64)  sl=Linux-64bit ;;
+            aarch64|arm64) sl=Linux-arm64 ;;
+            *) echo "unsupported arch: $(uname -m)"; exit 1 ;;
+          esac
+          d="$HOME/.local/bin"; mkdir -p "$d"
+          curl -fsSL "https://github.com/peak/s5cmd/releases/download/v2.3.0/s5cmd_2.3.0_${sl}.tar.gz" | tar -xz -C "$d" s5cmd
+          export PATH="$d:$PATH"
+        fi
+        export AWS_ACCESS_KEY_ID="$INPUT_ACCESS_KEY_ID"
+        export AWS_SECRET_ACCESS_KEY="$INPUT_SECRET_ACCESS_KEY"
+        export AWS_REGION="$INPUT_REGION" AWS_DEFAULT_REGION="$INPUT_REGION"
+        s5() { if [ -n "$INPUT_ENDPOINT" ]; then s5cmd --endpoint-url "$INPUT_ENDPOINT" "$@"; else s5cmd "$@"; fi; }
+
+        # Read the stored baseline (default-branch coverage), if any.
+        base=""
+        if s5 cp "s3://$INPUT_BUCKET/coverage/baseline.txt" /tmp/baseline.txt >/dev/null 2>&1; then
+          base=$(tr -dc '0-9.' < /tmp/baseline.txt)
+        fi
+
+        # Delta string vs baseline.
+        delta="n/a"
+        if [ -n "$base" ]; then
+          delta=$(awk -v p="$pct" -v b="$base" 'BEGIN{ d=p-b; printf "%+.2f", d }')
+        fi
+        echo "coverage=$pct% baseline=${base:-none} delta=$delta"
+
+        # Render a shields-style SVG badge, colored by threshold.
+        pi=${pct%.*}; pi=${pi:-0}
+        if   [ "$pi" -ge 80 ]; then col="#4c1"
+        elif [ "$pi" -ge 60 ]; then col="#97ca00"
+        elif [ "$pi" -ge 40 ]; then col="#dfb317"
+        else col="#e05d44"; fi
+        cat > /tmp/coverage.svg <<SVG
+        <svg xmlns="http://www.w3.org/2000/svg" width="102" height="20" role="img" aria-label="coverage: ${pct}%">
+        <linearGradient id="s" x2="0" y2="100%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient>
+        <clipPath id="r"><rect width="102" height="20" rx="3" fill="#fff"/></clipPath>
+        <g clip-path="url(#r)">
+        <rect width="61" height="20" fill="#555"/>
+        <rect x="61" width="41" height="20" fill="${col}"/>
+        <rect width="102" height="20" fill="url(#s)"/>
+        </g>
+        <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11">
+        <text x="31" y="14">coverage</text>
+        <text x="81" y="14">${pct}%</text>
+        </g>
+        </svg>
+        SVG
+
+        on_default=false
+        if [ "$INPUT_EVENT_NAME" = push ] && [ "$INPUT_REF_NAME" = "$INPUT_DEFAULT_BRANCH" ]; then
+          on_default=true
+        fi
+
+        # Default branch: publish the badge and update the baseline.
+        if [ "$on_default" = true ]; then
+          s5 cp --content-type image/svg+xml /tmp/coverage.svg "s3://$INPUT_BUCKET/coverage.svg"
+          printf '%s' "$pct" > /tmp/baseline.txt
+          s5 cp /tmp/baseline.txt "s3://$INPUT_BUCKET/coverage/baseline.txt"
+          echo "published badge + baseline ($pct%)"
+        fi
+
+        # Pull request: comment the delta, then optionally ratchet.
+        if [ "$INPUT_EVENT_NAME" = pull_request ] && [ -n "$INPUT_PR_NUMBER" ]; then
+          badge_line=""
+          [ -n "$INPUT_PUBLIC_URL" ] && badge_line="![coverage](${INPUT_PUBLIC_URL%/}/coverage.svg)"
+          marker="<!-- coverage-report -->"
+          body=$(printf '%s\n## Coverage: **%s%%**  (%s vs %s)\n\n%s\n' "$marker" "$pct" "$delta" "$INPUT_DEFAULT_BRANCH" "$badge_line")
+          if [ -n "$INPUT_TOKEN" ] && [ -n "$INPUT_SERVER_URL" ] && [ -n "$INPUT_REPO" ]; then
+            api="$INPUT_SERVER_URL/api/v1/repos/$INPUT_REPO/issues"
+            payload=$(INPUT_BODY="$body" python3 -c 'import json,os;print(json.dumps({"body":os.environ["INPUT_BODY"]}))' 2>/dev/null || printf '{"body":%s}' "\"$pct%\"")
+            # Update our existing marker comment if present, else create one.
+            existing=$(curl -fsS "$api/$INPUT_PR_NUMBER/comments" -H "Authorization: token $INPUT_TOKEN" 2>/dev/null \
+              | python3 -c 'import sys,json;print(next((str(c["id"]) for c in json.load(sys.stdin) if "<!-- coverage-report -->" in (c.get("body") or "")),""))' 2>/dev/null || true)
+            if [ -n "$existing" ]; then
+              curl -fsS -X PATCH "$api/comments/$existing" -H "Authorization: token $INPUT_TOKEN" -H "Content-Type: application/json" -d "$payload" >/dev/null && echo "updated PR comment" || echo "comment update failed (non-fatal)"
+            else
+              curl -fsS -X POST "$api/$INPUT_PR_NUMBER/comments" -H "Authorization: token $INPUT_TOKEN" -H "Content-Type: application/json" -d "$payload" >/dev/null && echo "posted PR comment" || echo "comment post failed (non-fatal)"
+            fi
+          fi
+          if [ "$INPUT_RATCHET" = true ] && [ -n "$base" ]; then
+            floor=$(awk -v b="$base" -v t="$INPUT_TOLERANCE" 'BEGIN{printf "%.2f", b-t}')
+            if awk -v p="$pct" -v f="$floor" 'BEGIN{exit !(p < f)}'; then
+              echo "::error::coverage $pct% is below the ratchet floor $floor% (baseline $base% - ${INPUT_TOLERANCE}pt)"
+              exit 1
+            fi
+            echo "ratchet ok: $pct% >= $floor%"
+          fi
+        fi
