@@ -138,6 +138,21 @@ release, and optionally installs crates through it.
     crates: "cargo-audit cargo-deny"
 ```
 
+## tarpaulin
+
+Installs [cargo-tarpaulin](https://github.com/xd009642/tarpaulin) from a pinned release
+and runs coverage. Linux only.
+
+```yaml
+- uses: https://codeberg.org/cstef/actions/tarpaulin@main
+  with:
+    version: "0.37.0"
+    args: "--workspace --exclude-files benches/*"
+    out: "Stdout Xml"          # Stdout, Xml, Html, Lcov, Json
+    timeout: "300"
+    fail-under: ""             # e.g. "40" to enforce a floor
+```
+
 ## mem-diagnostics
 
 Dumps detailed memory forensics (cgroup v2/v1 usage vs cap, peak/limit %, OOM events,

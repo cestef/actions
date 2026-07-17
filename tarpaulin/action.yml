@@ -1,0 +1,57 @@
+name: "cargo-tarpaulin coverage"
+description: "Install cargo-tarpaulin from a prebuilt release and run coverage. Linux only."
+inputs:
+  version:
+    description: "cargo-tarpaulin version (without leading v). Pinned for supply-chain safety."
+    default: "0.37.0"
+  args:
+    description: "Extra args to 'cargo tarpaulin' (e.g. '--workspace --exclude-files tests/*')."
+    default: "--workspace"
+  out:
+    description: "Space-separated output formats: Stdout, Xml, Html, Lcov, Json."
+    default: "Stdout"
+  timeout:
+    description: "Per-test timeout in seconds (tarpaulin --timeout)."
+    default: "300"
+  fail-under:
+    description: "Fail if total line coverage is below this percent. Empty = don't enforce."
+    default: ""
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_ARGS: ${{ inputs.args }}
+        INPUT_OUT: ${{ inputs.out }}
+        INPUT_TIMEOUT: ${{ inputs.timeout }}
+        INPUT_FAIL_UNDER: ${{ inputs.fail-under }}
+      run: |
+        set -euo pipefail
+        if [ "$(uname -s)" != "Linux" ]; then
+          echo "tarpaulin: Linux only"; exit 1
+        fi
+        case "$INPUT_VERSION" in
+          *[!A-Za-z0-9._-]*) echo "invalid version: $INPUT_VERSION"; exit 1 ;;
+        esac
+
+        if ! command -v cargo-tarpaulin >/dev/null; then
+          case "$(uname -m)" in
+            aarch64|arm64) arch=aarch64 ;;
+            x86_64|amd64)  arch=x86_64 ;;
+            *) echo "unsupported arch: $(uname -m)"; exit 1 ;;
+          esac
+          dest="$HOME/.cargo/bin"; mkdir -p "$dest"
+          curl -fsSL "https://github.com/xd009642/tarpaulin/releases/download/$INPUT_VERSION/cargo-tarpaulin-$arch-unknown-linux-musl.tar.gz" \
+            | tar -xz -C "$dest" cargo-tarpaulin
+          echo "$dest" >> "$GITHUB_PATH"
+          export PATH="$dest:$PATH"
+        fi
+        cargo tarpaulin --version
+
+        outs=""
+        for o in $INPUT_OUT; do outs="$outs --out $o"; done
+        fu=""
+        if [ -n "$INPUT_FAIL_UNDER" ]; then fu="--fail-under $INPUT_FAIL_UNDER"; fi
+
+        cargo tarpaulin --timeout "$INPUT_TIMEOUT" $outs $fu $INPUT_ARGS
