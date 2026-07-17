@@ -1,0 +1,97 @@
+name: "wrangler"
+description: "Run Cloudflare Wrangler (deploy by default), with an optional S3/R2 cache of the pinned install (wrangler + native workerd) so ephemeral runners skip the npm download. Node required on the runner."
+inputs:
+  version:
+    description: "Wrangler version (npm semver, no leading v). Pinned for supply-chain safety and as the cache key."
+    default: "4.112.0"
+  command:
+    description: "Wrangler command + args (e.g. 'deploy --minify', 'versions upload')."
+    default: "deploy"
+  working-directory:
+    description: "Directory to run wrangler in (where wrangler.toml/jsonc lives)."
+    default: "."
+  api-token:
+    description: "Cloudflare API token. Exported as CLOUDFLARE_API_TOKEN."
+    default: ""
+  account-id:
+    description: "Cloudflare account ID. Exported as CLOUDFLARE_ACCOUNT_ID."
+    default: ""
+  bucket:
+    description: "S3/R2 bucket for the install cache. Empty = no cache (plain npx)."
+    default: ""
+  endpoint:
+    description: "S3 endpoint URL (e.g. https://<account>.r2.cloudflarestorage.com). Omit for AWS S3."
+    default: ""
+  access-key-id:
+    default: ""
+  secret-access-key:
+    default: ""
+  region:
+    description: "S3 region. R2 wants 'auto'."
+    default: "auto"
+  prefix:
+    description: "Key prefix within the bucket."
+    default: "wrangler"
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_COMMAND: ${{ inputs.command }}
+        INPUT_BUCKET: ${{ inputs.bucket }}
+        INPUT_ENDPOINT: ${{ inputs.endpoint }}
+        INPUT_ACCESS_KEY_ID: ${{ inputs.access-key-id }}
+        INPUT_SECRET_ACCESS_KEY: ${{ inputs.secret-access-key }}
+        INPUT_REGION: ${{ inputs.region }}
+        INPUT_PREFIX: ${{ inputs.prefix }}
+        CLOUDFLARE_API_TOKEN: ${{ inputs.api-token }}
+        CLOUDFLARE_ACCOUNT_ID: ${{ inputs.account-id }}
+      run: |
+        set -euo pipefail
+        source "$GITHUB_ACTION_PATH/../_lib/common.sh"
+        command -v node >/dev/null || { echo "wrangler: node not found"; exit 1; }
+        command -v npm  >/dev/null || { echo "wrangler: npm not found"; exit 1; }
+        wa_check_version "$INPUT_VERSION"
+
+        # No bucket => plain npx, no cache.
+        if [ -z "$INPUT_BUCKET" ]; then
+          npx --yes "wrangler@$INPUT_VERSION" $INPUT_COMMAND
+          exit 0
+        fi
+
+        # Cache key: version + os + arch (workerd is a native, arch-specific dep).
+        arch=$(wa_arch); os=$(uname -s)
+        rel=".cache/wrangler/$INPUT_VERSION-$os-$arch"
+        installdir="$HOME/$rel"
+        bin="$installdir/node_modules/.bin/wrangler"
+
+        wa_s3_init
+        obj="s3://$INPUT_BUCKET/$INPUT_PREFIX/$INPUT_VERSION-$os-$arch.tar.gz"
+        tmp="$(mktemp -d)/wrangler.tar.gz"
+
+        # Restore from cache if present and not already on disk.
+        if [ ! -x "$bin" ] && s5 cp "$obj" "$tmp" >/dev/null 2>&1; then
+          if tar -tzf "$tmp" | grep -qE '^/|(^|/)\.\.(/|$)'; then
+            echo "wrangler: refusing cache with unsafe tar members"
+          else
+            mkdir -p "$HOME"; tar -C "$HOME" --no-same-owner -xzf "$tmp"
+            echo "wrangler: restored $obj"
+          fi
+        fi
+
+        # Miss: install into the fixed dir, then upload (immutable key).
+        if [ ! -x "$bin" ]; then
+          echo "wrangler: cache miss, installing wrangler@$INPUT_VERSION"
+          rm -rf "$installdir"; mkdir -p "$installdir"
+          npm install --no-save --no-audit --no-fund --prefix "$installdir" "wrangler@$INPUT_VERSION"
+          tar -C "$HOME" -czf "$tmp" "$rel"
+          if s5 ls "$obj" >/dev/null 2>&1; then
+            echo "wrangler: $obj already present, skipping save"
+          else
+            s5 cp "$tmp" "$obj" && echo "wrangler: saved $obj ($(du -h "$tmp" | cut -f1))"
+          fi
+        fi
+
+        "$bin" $INPUT_COMMAND

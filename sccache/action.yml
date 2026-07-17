@@ -36,21 +36,16 @@ runs:
         INPUT_SECRET_ACCESS_KEY: ${{ inputs.secret-access-key }}
       run: |
         set -euo pipefail
+        source "$GITHUB_ACTION_PATH/../_lib/common.sh"
 
         if ! command -v sccache >/dev/null; then
-          case "$(uname -m)" in
-            aarch64|arm64) arch=aarch64 ;;
-            x86_64|amd64)  arch=x86_64 ;;
-            *) echo "unsupported arch: $(uname -m)"; exit 1 ;;
-          esac
+          arch=$(wa_arch)
           case "$(uname -s)" in
             Linux)  slug="$arch-unknown-linux-musl" ;;
             Darwin) slug="$arch-apple-darwin" ;;
             *) echo "unsupported os: $(uname -s)"; exit 1 ;;
           esac
-          case "$INPUT_VERSION" in
-            *[!A-Za-z0-9._-]*) echo "invalid version: $INPUT_VERSION"; exit 1 ;;
-          esac
+          wa_check_version "$INPUT_VERSION"
           dest="$HOME/.cargo/bin"; mkdir -p "$dest"
           curl -fsSL "https://github.com/mozilla/sccache/releases/download/$INPUT_VERSION/sccache-$INPUT_VERSION-$slug.tar.gz" \
             | tar -xz --strip-components=1 -C "$dest" "sccache-$INPUT_VERSION-$slug/sccache"

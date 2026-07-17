@@ -42,31 +42,8 @@ runs:
         INPUT_PATHS: ${{ inputs.paths }}
       run: |
         set -euo pipefail
-
-        if ! command -v s5cmd >/dev/null; then
-          case "$(uname -m)" in
-            x86_64|amd64)  sl=Linux-64bit ;;
-            aarch64|arm64) sl=Linux-arm64 ;;
-            *) echo "unsupported arch: $(uname -m)"; exit 1 ;;
-          esac
-          ver=2.3.0
-          dest="$HOME/.local/bin"; mkdir -p "$dest"
-          curl -fsSL "https://github.com/peak/s5cmd/releases/download/v$ver/s5cmd_${ver}_${sl}.tar.gz" \
-            | tar -xz -C "$dest" s5cmd
-          echo "$dest" >> "$GITHUB_PATH"
-          export PATH="$dest:$PATH"
-        fi
-
-        export AWS_ACCESS_KEY_ID="$INPUT_ACCESS_KEY_ID"
-        export AWS_SECRET_ACCESS_KEY="$INPUT_SECRET_ACCESS_KEY"
-        export AWS_REGION="$INPUT_REGION" AWS_DEFAULT_REGION="$INPUT_REGION"
-        s5() {
-          if [ -n "$INPUT_ENDPOINT" ]; then
-            s5cmd --endpoint-url "$INPUT_ENDPOINT" "$@"
-          else
-            s5cmd "$@"
-          fi
-        }
+        source "$GITHUB_ACTION_PATH/../_lib/common.sh"
+        wa_s3_init
 
         key="$INPUT_KEY"
         if [ -z "$key" ]; then

@@ -68,22 +68,9 @@ runs:
         INPUT_TOLERANCE: ${{ inputs.tolerance }}
       run: |
         set -euo pipefail
+        source "$GITHUB_ACTION_PATH/../_lib/common.sh"
         pct="$INPUT_PERCENT"
-
-        if ! command -v s5cmd >/dev/null; then
-          case "$(uname -m)" in
-            x86_64|amd64)  sl=Linux-64bit ;;
-            aarch64|arm64) sl=Linux-arm64 ;;
-            *) echo "unsupported arch: $(uname -m)"; exit 1 ;;
-          esac
-          d="$HOME/.local/bin"; mkdir -p "$d"
-          curl -fsSL "https://github.com/peak/s5cmd/releases/download/v2.3.0/s5cmd_2.3.0_${sl}.tar.gz" | tar -xz -C "$d" s5cmd
-          export PATH="$d:$PATH"
-        fi
-        export AWS_ACCESS_KEY_ID="$INPUT_ACCESS_KEY_ID"
-        export AWS_SECRET_ACCESS_KEY="$INPUT_SECRET_ACCESS_KEY"
-        export AWS_REGION="$INPUT_REGION" AWS_DEFAULT_REGION="$INPUT_REGION"
-        s5() { if [ -n "$INPUT_ENDPOINT" ]; then s5cmd --endpoint-url "$INPUT_ENDPOINT" "$@"; else s5cmd "$@"; fi; }
+        wa_s3_init
 
         # Read the stored baseline (default-branch coverage), if any.
         base=""

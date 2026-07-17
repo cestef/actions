@@ -33,19 +33,14 @@ runs:
         INPUT_FAIL_UNDER: ${{ inputs.fail-under }}
       run: |
         set -euo pipefail
+        source "$GITHUB_ACTION_PATH/../_lib/common.sh"
         if [ "$(uname -s)" != "Linux" ]; then
           echo "tarpaulin: Linux only"; exit 1
         fi
-        case "$INPUT_VERSION" in
-          *[!A-Za-z0-9._-]*) echo "invalid version: $INPUT_VERSION"; exit 1 ;;
-        esac
+        wa_check_version "$INPUT_VERSION"
 
         if ! command -v cargo-tarpaulin >/dev/null; then
-          case "$(uname -m)" in
-            aarch64|arm64) arch=aarch64 ;;
-            x86_64|amd64)  arch=x86_64 ;;
-            *) echo "unsupported arch: $(uname -m)"; exit 1 ;;
-          esac
+          arch=$(wa_arch)
           dest="$HOME/.cargo/bin"; mkdir -p "$dest"
           curl -fsSL "https://github.com/xd009642/tarpaulin/releases/download/$INPUT_VERSION/cargo-tarpaulin-$arch-unknown-linux-musl.tar.gz" \
             | tar -xz -C "$dest" cargo-tarpaulin

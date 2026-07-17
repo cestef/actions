@@ -16,17 +16,14 @@ runs:
         INPUT_RUSTFLAGS: ${{ inputs.rustflags }}
       run: |
         set -euo pipefail
+        source "$GITHUB_ACTION_PATH/../_lib/common.sh"
         if [ "$(uname -s)" != "Linux" ]; then
           echo "mold: non-Linux host, skipping."
           exit 0
         fi
 
         if ! command -v mold >/dev/null; then
-          case "$(uname -m)" in
-            aarch64|arm64) arch=aarch64 ;;
-            x86_64|amd64)  arch=x86_64 ;;
-            *) echo "unsupported arch: $(uname -m)"; exit 1 ;;
-          esac
+          arch=$(wa_arch)
           dest="$HOME/.local"; mkdir -p "$dest"
           curl -fsSL "https://github.com/rui314/mold/releases/download/v$INPUT_VERSION/mold-$INPUT_VERSION-$arch-linux.tar.gz" \
             | tar -xz --strip-components=1 -C "$dest"

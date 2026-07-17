@@ -185,6 +185,44 @@ default branch writes it, PRs read it.
 Badge: `![coverage](https://<id>.r2.dev/coverage.svg)`. The bucket needs write access
 scoped to the token you pass (a public R2 bucket with `wrangler r2 bucket dev-url enable`).
 
+## wrangler
+
+Runs [Wrangler](https://developers.cloudflare.com/workers/wrangler/) (deploy by default).
+Modern wrangler is npm-only, so this needs Node on the runner; the official
+`cloudflare/wrangler-action` is a wrapper around the same `npx wrangler` call.
+
+```yaml
+- uses: https://codeberg.org/cstef/actions/wrangler@main
+  with:
+    version: "4.112.0"
+    command: "deploy"                          # e.g. "versions upload", "d1 migrations apply"
+    working-directory: "."
+    api-token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+```
+
+With no `bucket`, it runs `npx wrangler@<version>`. On an ephemeral runner that
+cold-downloads wrangler + the native `workerd` (tens of MB) every job. Point it at an
+S3/R2 bucket and it caches the pinned install instead, keyed on `version + os + arch`
+(immutable, so it uploads once then only downloads):
+
+```yaml
+- uses: https://codeberg.org/cstef/actions/wrangler@main
+  with:
+    version: "4.112.0"
+    command: "deploy"
+    api-token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    bucket: my-wrangler-cache
+    endpoint: ${{ secrets.R2_ENDPOINT }}
+    access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+    secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+```
+
+Trust: same model as the other caches (`sccache`, `cargo-cache`) — anyone with bucket
+write access controls what wrangler binary a job runs, so treat the bucket as trusted.
+Restores reject tar members with absolute paths or `..` traversal.
+
 ## mem-diagnostics
 
 Dumps detailed memory forensics (cgroup v2/v1 usage vs cap, peak/limit %, OOM events,
@@ -201,6 +239,9 @@ memory-capped runners.
 ```
 
 ## Security
+
+Shared shell helpers (version validation, arch detection, s5cmd/S3 setup) live in
+`_lib/common.sh`, sourced by each action via `$GITHUB_ACTION_PATH/../_lib/common.sh`.
 
 Inputs are passed via the environment, never interpolated into the shell body (no script
 injection). Binaries are fetched over TLS from pinned release versions. sccache writes its

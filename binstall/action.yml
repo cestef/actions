@@ -16,10 +16,8 @@ runs:
         INPUT_CRATES: ${{ inputs.crates }}
       run: |
         set -euo pipefail
-
-        case "$INPUT_VERSION" in
-          *[!A-Za-z0-9._-]*) echo "invalid version: $INPUT_VERSION"; exit 1 ;;
-        esac
+        source "$GITHUB_ACTION_PATH/../_lib/common.sh"
+        wa_check_version "$INPUT_VERSION"
 
         if ! command -v cargo-binstall >/dev/null; then
           case "$(uname -s)-$(uname -m)" in

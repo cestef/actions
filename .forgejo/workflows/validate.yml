@@ -1,0 +1,33 @@
+name: validate
+on: [push]
+jobs:
+  mold:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./mold
+        with:
+          rustflags: "false"
+
+  binstall:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./binstall
+
+  wrangler:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./wrangler
+        with:
+          command: "--version"
+
+  bad-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./wrangler
+        with:
+          version: "bad;rm -rf"
+          command: "--version"
