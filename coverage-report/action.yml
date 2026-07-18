@@ -45,6 +45,15 @@ inputs:
   tolerance:
     description: "Allowed coverage drop, in percentage points."
     default: "0.5"
+  badge-label:
+    description: "Left-side text on the badge."
+    default: "coverage"
+  badge-label-color:
+    description: "Left-side background color."
+    default: "#2b2f36"
+  badge-thresholds:
+    description: "Comma list of min-percent:color, highest first. First entry whose min <= coverage wins."
+    default: "90:#3fb950,75:#7bc62d,60:#d5b60a,40:#e0902f,0:#e5534b"
 runs:
   using: composite
   steps:
@@ -66,6 +75,9 @@ runs:
         INPUT_DEFAULT_BRANCH: ${{ inputs.default-branch }}
         INPUT_RATCHET: ${{ inputs.ratchet }}
         INPUT_TOLERANCE: ${{ inputs.tolerance }}
+        INPUT_BADGE_LABEL: ${{ inputs.badge-label }}
+        INPUT_BADGE_LABEL_COLOR: ${{ inputs.badge-label-color }}
+        INPUT_BADGE_THRESHOLDS: ${{ inputs.badge-thresholds }}
       run: |
         set -euo pipefail
         source "$GITHUB_ACTION_PATH/../_lib/common.sh"
@@ -85,27 +97,48 @@ runs:
         fi
         echo "coverage=$pct% baseline=${base:-none} delta=$delta"
 
-        # Render a shields-style SVG badge, colored by threshold.
+        # Render a flat SVG badge, colored by threshold. Widths are computed
+        # from the text so wide values (e.g. 100.0%) never overflow.
+        label="$INPUT_BADGE_LABEL"
+        lcol="$INPUT_BADGE_LABEL_COLOR"
         pi=${pct%.*}; pi=${pi:-0}
-        if   [ "$pi" -ge 80 ]; then col="#4c1"
-        elif [ "$pi" -ge 60 ]; then col="#97ca00"
-        elif [ "$pi" -ge 40 ]; then col="#dfb317"
-        else col="#e05d44"; fi
-        cat > /tmp/coverage.svg <<SVG
-        <svg xmlns="http://www.w3.org/2000/svg" width="102" height="20" role="img" aria-label="coverage: ${pct}%">
-        <linearGradient id="s" x2="0" y2="100%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient>
-        <clipPath id="r"><rect width="102" height="20" rx="3" fill="#fff"/></clipPath>
-        <g clip-path="url(#r)">
-        <rect width="61" height="20" fill="#555"/>
-        <rect x="61" width="41" height="20" fill="${col}"/>
-        <rect width="102" height="20" fill="url(#s)"/>
-        </g>
-        <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11">
-        <text x="31" y="14">coverage</text>
-        <text x="81" y="14">${pct}%</text>
-        </g>
-        </svg>
-        SVG
+        # Pick the first "min:color" entry whose min <= coverage.
+        col="#e5534b"
+        IFS=',' read -ra _thr <<< "$INPUT_BADGE_THRESHOLDS"
+        for _t in "${_thr[@]}"; do
+          _min=${_t%%:*}; _c=${_t#*:}
+          _min=$(printf '%s' "$_min" | tr -dc '0-9')
+          [ -n "$_min" ] || continue
+          if [ "$pi" -ge "$_min" ]; then col="$_c"; break; fi
+        done
+
+        val="${pct}%"
+        # ~6.5px per char at 11px + 20px side padding.
+        lw=$(awk -v n="${#label}" 'BEGIN{ w=n*6.5+20; printf "%d", (w<40?40:w) }')
+        vw=$(awk -v n="${#val}"   'BEGIN{ w=n*6.5+20; printf "%d", (w<40?40:w) }')
+        tw=$((lw + vw))
+        # Text centers and textLength, in x10-scaled units (shields trick).
+        lcx=$(awk -v w="$lw" 'BEGIN{ printf "%d", w*5 }')
+        vcx=$(awk -v l="$lw" -v v="$vw" 'BEGIN{ printf "%d", (l+v/2)*10 }')
+        ltl=$(awk -v w="$lw" 'BEGIN{ printf "%d", (w-20)*10 }')
+        vtl=$(awk -v w="$vw" 'BEGIN{ printf "%d", (w-14)*10 }')
+        esc() { printf '%s' "$1" | sed 's/&/\&amp;/g;s/</\&lt;/g;s/>/\&gt;/g'; }
+        elabel=$(esc "$label"); eval_=$(esc "$val")
+        # Fill the SVG template. Text substitutions (label/value) go last so an
+        # escaped '&' in them can't be reinterpreted by earlier sed passes.
+        sed \
+          -e "s/{{TW}}/$tw/g" \
+          -e "s/{{LW}}/$lw/g" \
+          -e "s/{{VW}}/$vw/g" \
+          -e "s/{{LCX}}/$lcx/g" \
+          -e "s/{{VCX}}/$vcx/g" \
+          -e "s/{{LTL}}/$ltl/g" \
+          -e "s/{{VTL}}/$vtl/g" \
+          -e "s|{{LCOL}}|$lcol|g" \
+          -e "s|{{COL}}|$col|g" \
+          "$GITHUB_ACTION_PATH/badge.svg.tmpl" \
+          | LABEL="$elabel" VAL="$eval_" perl -pe 's/\Q{{LABEL}}\E/$ENV{LABEL}/g; s/\Q{{VAL}}\E/$ENV{VAL}/g' \
+          > /tmp/coverage.svg
 
         on_default=false
         if [ "$INPUT_EVENT_NAME" = push ] && [ "$INPUT_REF_NAME" = "$INPUT_DEFAULT_BRANCH" ]; then
