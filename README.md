@@ -100,20 +100,32 @@ apt or apk. Idempotent.
 
 ## cargo-cache
 
-Persists `~/.cargo` registry + git downloads to an S3-compatible bucket, keyed on
-`Cargo.lock`. Complements sccache (which caches compiler output, not crate downloads),
-so ephemeral runners stop re-fetching crates. Call it twice: `restore` before the build,
-`save` after.
+Persists cargo state to an S3-compatible bucket. By default it caches `~/.cargo` registry
++ git downloads, keyed on `Cargo.lock` (sccache caches compiler output, not crate
+downloads). Point `base`/`paths` at the workspace `target/` and it also caches dependency
+rlibs, build-script outputs, and cargo's fingerprint DB, which sccache does not. Call it
+twice per cache: `restore` before the build, `save` after.
 
 ```yaml
-- uses: https://codeberg.org/cstef/actions/cargo-cache@main   # restore (default)
+- uses: https://codeberg.org/cstef/actions/cargo-cache@main   # registry, restore (default)
   with:
     bucket: my-cargo-cache
     endpoint: ${{ secrets.R2_ENDPOINT }}
     access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
     secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-# ... build ...
+# also cache target/ (distinct prefix; key includes the rustc version)
 - uses: https://codeberg.org/cstef/actions/cargo-cache@main
+  with:
+    prefix: target-cache
+    toolchain-key: "true"
+    base: "."
+    paths: target
+    bucket: my-cargo-cache
+    endpoint: ${{ secrets.R2_ENDPOINT }}
+    access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+    secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+# ... build ...
+- uses: https://codeberg.org/cstef/actions/cargo-cache@main   # registry, save
   with:
     mode: save
     bucket: my-cargo-cache
@@ -122,9 +134,15 @@ so ephemeral runners stop re-fetching crates. Call it twice: `restore` before th
     secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
 ```
 
-Trust: anyone with bucket write access can influence what lands in `~/.cargo`, so treat
-the bucket as trusted (same model as the sccache bucket). Restores reject tar members
-with absolute paths or `..` traversal.
+`base` is the dir the tar is rooted at (empty = `$HOME`); `paths` are relative to it.
+`toolchain-key: true` mixes the rustc version into the key, since compiled artifacts are
+toolchain-specific. Use a distinct `prefix` per cache (registry vs target/, and one per
+build flavour, e.g. instrumented coverage builds). Keys are immutable: a `save` skips the
+upload if that key already exists, so target/ is uploaded once per `Cargo.lock` + rustc.
+
+Trust: anyone with bucket write access can influence what lands in the cached dirs, so
+treat the bucket as trusted (same model as the sccache bucket). Restores reject tar
+members with absolute paths or `..` traversal.
 
 ## binstall
 
@@ -246,7 +264,7 @@ Shared shell helpers (version validation, arch detection, s5cmd/S3 setup) live i
 Inputs are passed via the environment, never interpolated into the shell body (no script
 injection). Binaries are fetched over TLS from pinned release versions. sccache writes its
 backend env with the random-delimiter heredoc form so values can't inject extra
-`GITHUB_ENV` entries. cargo-cache validates tar members before extracting into `~/.cargo`.
+`GITHUB_ENV` entries. cargo-cache validates tar members before extracting into `base`.
 
 ## License
 
