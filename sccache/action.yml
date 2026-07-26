@@ -13,10 +13,14 @@ runs:
     # sccache reads ACTIONS_RESULTS_URL / ACTIONS_RUNTIME_TOKEN, which the runner
     # exposes to JS actions but not to `run:` steps. A github-script step can see
     # them, so it re-exports them for the build steps that follow.
+    #
+    # ACTIONS_CACHE_URL is deliberately NOT re-exported: it points at the retired
+    # v1 cache service, and sccache prefers it whenever it is set, which makes
+    # every compile fail on a service that answers with an outage page.
     - uses: actions/github-script@v7
       with:
         script: |
-          for (const name of ['ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_TOKEN', 'ACTIONS_CACHE_URL']) {
+          for (const name of ['ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_TOKEN']) {
             const value = process.env[name]
             if (!value) continue
             if (name === 'ACTIONS_RUNTIME_TOKEN') core.setSecret(value)
