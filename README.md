@@ -1,28 +1,30 @@
 # cstef/actions
 
-Reusable composite actions for Forgejo/Gitea Actions (Codeberg), aimed at Rust CI on
-mixed arm64/amd64 runners. Each action is multiplatform (detects the runner arch),
-idempotent (skips install when the tool is already present, so a prebaked runner image
-pays nothing), and downloads prebuilt binaries directly (no `apt`, no GitHub-token
-dependency that trips up non-GitHub forges).
+Reusable composite actions for GitHub Actions, aimed at Rust CI on mixed arm64/amd64
+runners. Each action is multiplatform (detects the runner arch), idempotent (skips
+install when the tool is already present, so a prebaked runner image pays nothing), and
+downloads prebuilt binaries directly (no `apt`, no marketplace dependency).
 
-Reference them by full URL and subpath:
+This is the `github` branch. The `forgejo` branch carries the same actions for
+Forgejo/Gitea (Codeberg), where they are referenced by full URL instead.
+
+Reference them by owner, subpath and branch:
 
 ```yaml
-- uses: https://codeberg.org/cstef/actions/rust@main
-- uses: https://codeberg.org/cstef/actions/mold@main
-- uses: https://codeberg.org/cstef/actions/sccache@main
-- uses: https://codeberg.org/cstef/actions/nextest@main
+- uses: cestef/actions/rust@github
+- uses: cestef/actions/mold@github
+- uses: cestef/actions/sccache@github
+- uses: cestef/actions/nextest@github
 ```
 
-Pin `@main` to a tag or commit for reproducibility.
+Pin `@github` to a tag or commit for reproducibility.
 
 ## rust
 
 Installs `rustup` (if missing) and a toolchain, plus optional targets and components.
 
 ```yaml
-- uses: https://codeberg.org/cstef/actions/rust@main
+- uses: cestef/actions/rust@github
   with:
     toolchain: ""              # empty: honor rust-toolchain.toml, else stable
     targets: ""                # "x86_64-unknown-linux-musl aarch64-unknown-linux-gnu"
@@ -36,7 +38,7 @@ Installs the [mold](https://github.com/rui314/mold) linker from its prebuilt rel
 for later steps. Linux only (no-op elsewhere).
 
 ```yaml
-- uses: https://codeberg.org/cstef/actions/mold@main
+- uses: cestef/actions/mold@github
   with:
     version: "2.41.0"
     rustflags: "true"          # false if you set RUSTFLAGS yourself (see note)
@@ -48,39 +50,31 @@ in your workflow `env:` including `-C link-arg=-fuse-ld=mold`.
 
 ## sccache
 
-Installs [sccache](https://github.com/mozilla/sccache) and points it at an
-S3-compatible bucket, exporting `RUSTC_WRAPPER=sccache` and the backend env for every
-later step. Built for Cloudflare R2 but works with any S3 endpoint.
+Installs [sccache](https://github.com/mozilla/sccache) and points it at the GitHub
+Actions cache, exporting `RUSTC_WRAPPER=sccache` for every later step. No bucket, no
+credentials, no egress bill.
 
 ```yaml
-- uses: https://codeberg.org/cstef/actions/sccache@main
+- uses: cestef/actions/sccache@github
   with:
-    bucket: my-sccache
-    endpoint: ${{ secrets.R2_ENDPOINT }}       # https://<account>.r2.cloudflarestorage.com
-    region: auto                               # R2 wants 'auto'
-    access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
-    secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-    key-prefix: ""                             # optional bucket sub-prefix
+    version: v0.16.0
+    key-prefix: ""     # optional namespace; bump to invalidate everything
 ```
 
-A shared bucket persists the compile cache across ephemeral runners (whose local cache
-dies with the instance) and warms the static ones. It sets `CARGO_INCREMENTAL=0`, which
-sccache requires.
+It sets `CARGO_INCREMENTAL=0`, which sccache requires. The Actions cache the compiler
+objects land in is the same 10 GB per-repo store `actions/cache` uses, evicted
+least-recently-used, so a busy repo shares that budget with `cargo-cache`.
 
-### R2 setup
-
-1. Create the bucket: `wrangler r2 bucket create my-sccache`.
-2. Bound cost: `wrangler r2 bucket lifecycle add my-sccache --name expire-14d --expire-days 14`.
-3. Create an R2 API token (Object Read & Write, scoped to the bucket) in the dashboard;
-   it yields an Access Key ID, Secret Access Key, and the S3 endpoint.
-4. Store the three as repo/org Actions secrets and pass them as above.
+sccache reads `ACTIONS_RESULTS_URL` and `ACTIONS_RUNTIME_TOKEN`, which the runner hands
+to JS actions but not to `run:` steps; the action re-exports them (masking the token)
+so the build steps can see them.
 
 ## nextest
 
 Installs [cargo-nextest](https://nexte.st) and, optionally, runs the suite.
 
 ```yaml
-- uses: https://codeberg.org/cstef/actions/nextest@main
+- uses: cestef/actions/nextest@github
   with:
     version: latest
     run: "true"
@@ -93,56 +87,43 @@ Installs the musl C cross toolchain (`musl-gcc`, perl, make) for static builds, 
 apt or apk. Idempotent.
 
 ```yaml
-- uses: https://codeberg.org/cstef/actions/musl@main
+- uses: cestef/actions/musl@github
   with:
     packages: ""               # extra packages
 ```
 
 ## cargo-cache
 
-Persists cargo state to an S3-compatible bucket. By default it caches `~/.cargo` registry
-+ git downloads, keyed on `Cargo.lock` (sccache caches compiler output, not crate
-downloads). Point `base`/`paths` at the workspace `target/` and it also caches dependency
-rlibs, build-script outputs, and cargo's fingerprint DB, which sccache does not. Call it
-twice per cache: `restore` before the build, `save` after.
+Persists cargo state to the GitHub Actions cache. By default it caches `~/.cargo`
+registry + git downloads, keyed on `Cargo.lock` (sccache caches compiler output, not
+crate downloads). Point `base`/`paths` at the workspace `target/` and it also caches
+dependency rlibs, build-script outputs, and cargo's fingerprint DB, which sccache does
+not. Call it twice per cache: `restore` before the build, `save` after.
 
 ```yaml
-- uses: https://codeberg.org/cstef/actions/cargo-cache@main   # registry, restore (default)
-  with:
-    bucket: my-cargo-cache
-    endpoint: ${{ secrets.R2_ENDPOINT }}
-    access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
-    secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+- uses: cestef/actions/cargo-cache@github   # registry, restore (default)
 # also cache target/ (distinct prefix; key includes the rustc version)
-- uses: https://codeberg.org/cstef/actions/cargo-cache@main
+- uses: cestef/actions/cargo-cache@github
   with:
     prefix: target-cache
     toolchain-key: "true"
     base: "."
     paths: target
-    bucket: my-cargo-cache
-    endpoint: ${{ secrets.R2_ENDPOINT }}
-    access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
-    secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
 # ... build ...
-- uses: https://codeberg.org/cstef/actions/cargo-cache@main   # registry, save
+- uses: cestef/actions/cargo-cache@github   # registry, save
   with:
     mode: save
-    bucket: my-cargo-cache
-    endpoint: ${{ secrets.R2_ENDPOINT }}
-    access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
-    secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
 ```
 
-`base` is the dir the tar is rooted at (empty = `$HOME`); `paths` are relative to it.
-`toolchain-key: true` mixes the rustc version into the key, since compiled artifacts are
-toolchain-specific. Use a distinct `prefix` per cache (registry vs target/, and one per
-build flavour, e.g. instrumented coverage builds). Keys are immutable: a `save` skips the
-upload if that key already exists, so target/ is uploaded once per `Cargo.lock` + rustc.
+`base` is the dir `paths` are relative to (empty = `$HOME`). `toolchain-key: true` mixes
+the rustc version into the key, since compiled artifacts are toolchain-specific. Use a
+distinct `prefix` per cache (registry vs target/, and one per build flavour, e.g.
+instrumented coverage builds). The OS and arch are always in the key, so a mixed
+arm64/amd64 matrix does not cross-restore. Keys are immutable: a `save` on an existing
+key warns and moves on, so target/ is uploaded once per `Cargo.lock` + rustc.
 
-Trust: anyone with bucket write access can influence what lands in the cached dirs, so
-treat the bucket as trusted (same model as the sccache bucket). Restores reject tar
-members with absolute paths or `..` traversal.
+Caches are scoped by branch: a PR reads the base branch's entries but writes only its
+own, and GitHub evicts least-recently-used past 10 GB per repository.
 
 ## binstall
 
@@ -150,7 +131,7 @@ Installs [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) from a p
 release, and optionally installs crates through it.
 
 ```yaml
-- uses: https://codeberg.org/cstef/actions/binstall@main
+- uses: cestef/actions/binstall@github
   with:
     version: "1.21.0"
     crates: "cargo-audit cargo-deny"
@@ -162,7 +143,7 @@ Installs [cargo-tarpaulin](https://github.com/xd009642/tarpaulin) from a pinned 
 and runs coverage. Linux only.
 
 ```yaml
-- uses: https://codeberg.org/cstef/actions/tarpaulin@main
+- uses: cestef/actions/tarpaulin@github
   with:
     version: "0.37.0"
     args: "--workspace --exclude-files benches/*"
@@ -181,9 +162,9 @@ default branch writes it, PRs read it.
 
 ```yaml
 - id: cov
-  uses: https://codeberg.org/cstef/actions/tarpaulin@main
+  uses: cestef/actions/tarpaulin@github
   with: { out: "Stdout Xml" }
-- uses: https://codeberg.org/cstef/actions/coverage-report@main
+- uses: cestef/actions/coverage-report@github
   with:
     percent: ${{ steps.cov.outputs.percent }}
     bucket: my-badges              # a public bucket, for the badge URL
@@ -191,8 +172,8 @@ default branch writes it, PRs read it.
     access-key-id: ${{ secrets.R2_BADGE_ACCESS_KEY_ID }}
     secret-access-key: ${{ secrets.R2_BADGE_SECRET_ACCESS_KEY }}
     public-url: https://<id>.r2.dev          # where the bucket is served
-    token: ${{ forge.token }}                # for the PR comment
-    server-url: ${{ github.server_url }}
+    token: ${{ secrets.GITHUB_TOKEN }}       # for the PR comment (pull-requests: write)
+    server-url: ${{ github.api_url }}
     repo: ${{ github.repository }}
     event-name: ${{ github.event_name }}
     ref-name: ${{ github.ref_name }}
@@ -210,7 +191,7 @@ Modern wrangler is npm-only, so this needs Node on the runner; the official
 `cloudflare/wrangler-action` is a wrapper around the same `npx wrangler` call.
 
 ```yaml
-- uses: https://codeberg.org/cstef/actions/wrangler@main
+- uses: cestef/actions/wrangler@github
   with:
     version: "4.112.0"
     command: "deploy"                          # e.g. "versions upload", "d1 migrations apply"
@@ -219,27 +200,9 @@ Modern wrangler is npm-only, so this needs Node on the runner; the official
     account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 ```
 
-With no `bucket`, it runs `npx wrangler@<version>`. On an ephemeral runner that
-cold-downloads wrangler + the native `workerd` (tens of MB) every job. Point it at an
-S3/R2 bucket and it caches the pinned install instead, keyed on `version + os + arch`
-(immutable, so it uploads once then only downloads):
-
-```yaml
-- uses: https://codeberg.org/cstef/actions/wrangler@main
-  with:
-    version: "4.112.0"
-    command: "deploy"
-    api-token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-    account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-    bucket: my-wrangler-cache
-    endpoint: ${{ secrets.R2_ENDPOINT }}
-    access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
-    secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-```
-
-Trust: same model as the other caches (`sccache`, `cargo-cache`) — anyone with bucket
-write access controls what wrangler binary a job runs, so treat the bucket as trusted.
-Restores reject tar members with absolute paths or `..` traversal.
+An ephemeral runner cold-downloads wrangler + the native `workerd` (tens of MB) every
+job, so the pinned install is cached by default, keyed on `version + os + arch`. Set
+`cache: "false"` to fall back to a plain `npx wrangler@<version>`.
 
 ## mem-diagnostics
 
@@ -248,7 +211,7 @@ Dumps detailed memory forensics (cgroup v2/v1 usage vs cap, peak/limit %, OOM ev
 memory-capped runners.
 
 ```yaml
-- uses: https://codeberg.org/cstef/actions/mem-diagnostics@main
+- uses: cestef/actions/mem-diagnostics@github
   if: failure()
   with:
     processes: "true"
@@ -258,13 +221,19 @@ memory-capped runners.
 
 ## Security
 
-Shared shell helpers (version validation, arch detection, s5cmd/S3 setup) live in
-`_lib/common.sh`, sourced by each action via `$GITHUB_ACTION_PATH/../_lib/common.sh`.
+Shared shell helpers (version validation, arch detection) live in `_lib/common.sh`,
+sourced by each action via `$GITHUB_ACTION_PATH/../_lib/common.sh`.
 
 Inputs are passed via the environment, never interpolated into the shell body (no script
-injection). Binaries are fetched over TLS from pinned release versions. sccache writes its
-backend env with the random-delimiter heredoc form so values can't inject extra
-`GITHUB_ENV` entries. cargo-cache validates tar members before extracting into `base`.
+injection). Binaries are fetched over TLS from pinned release versions. Anything written
+to `GITHUB_ENV` or `GITHUB_OUTPUT` uses the random-delimiter heredoc form, so a value
+containing a newline cannot inject extra entries.
+
+`sccache`, `cargo-cache` and `wrangler` store to the GitHub Actions cache, which is
+scoped per repository and per branch: a pull request reads the base branch's entries but
+writes only its own, so a fork PR cannot poison what a later default-branch build
+restores. `coverage-report` still writes its badge and baseline to an S3/R2 bucket, since
+a badge needs public hosting; treat that bucket as trusted.
 
 ## License
 

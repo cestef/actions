@@ -1,39 +1,32 @@
 name: "sccache"
-description: "Install sccache and point it at an S3-compatible bucket (e.g. Cloudflare R2). Exports RUSTC_WRAPPER for later steps."
+description: "Install sccache and point it at the GitHub Actions cache. Exports RUSTC_WRAPPER for later steps."
 inputs:
   version:
     description: "sccache release tag."
     default: "v0.16.0"
-  bucket:
-    description: "Bucket name (SCCACHE_BUCKET)."
-    required: true
-  endpoint:
-    description: "S3 endpoint URL, e.g. https://<account>.r2.cloudflarestorage.com. Omit for AWS S3."
-    default: ""
-  region:
-    description: "Region (SCCACHE_REGION). R2 wants 'auto'."
-    default: "auto"
   key-prefix:
-    description: "Optional key prefix within the bucket (SCCACHE_S3_KEY_PREFIX)."
+    description: "Namespaces the cache entries (SCCACHE_GHA_VERSION). Bump it to invalidate everything sccache has stored."
     default: ""
-  access-key-id:
-    description: "Access key id (AWS_ACCESS_KEY_ID)."
-    required: true
-  secret-access-key:
-    description: "Secret access key (AWS_SECRET_ACCESS_KEY)."
-    required: true
 runs:
   using: composite
   steps:
+    # sccache reads ACTIONS_RESULTS_URL / ACTIONS_RUNTIME_TOKEN, which the runner
+    # exposes to JS actions but not to `run:` steps. A github-script step can see
+    # them, so it re-exports them for the build steps that follow.
+    - uses: actions/github-script@v7
+      with:
+        script: |
+          for (const name of ['ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_TOKEN', 'ACTIONS_CACHE_URL']) {
+            const value = process.env[name]
+            if (!value) continue
+            if (name === 'ACTIONS_RUNTIME_TOKEN') core.setSecret(value)
+            core.exportVariable(name, value)
+          }
+
     - shell: bash
       env:
         INPUT_VERSION: ${{ inputs.version }}
-        INPUT_BUCKET: ${{ inputs.bucket }}
-        INPUT_ENDPOINT: ${{ inputs.endpoint }}
-        INPUT_REGION: ${{ inputs.region }}
         INPUT_KEY_PREFIX: ${{ inputs.key-prefix }}
-        INPUT_ACCESS_KEY_ID: ${{ inputs.access-key-id }}
-        INPUT_SECRET_ACCESS_KEY: ${{ inputs.secret-access-key }}
       run: |
         set -euo pipefail
         source "$GITHUB_ACTION_PATH/../_lib/common.sh"
@@ -53,18 +46,14 @@ runs:
         fi
         sccache --version
 
-        # Persist the backend for later steps. Values are written via a random-delimiter
-        # heredoc so a stray newline can't inject extra GITHUB_ENV entries.
-        emit() {  # emit NAME VALUE
-          local d="__ghenv_$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
-          { printf '%s<<%s\n' "$1" "$d"; printf '%s\n' "$2"; printf '%s\n' "$d"; } >> "$GITHUB_ENV"
-        }
+        # Persist the backend for later steps.
+        echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
         echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
         # sccache can't cache incremental artifacts, so keep cargo from making them.
         echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
-        emit SCCACHE_BUCKET "$INPUT_BUCKET"
-        emit SCCACHE_REGION "$INPUT_REGION"
-        emit AWS_ACCESS_KEY_ID "$INPUT_ACCESS_KEY_ID"
-        emit AWS_SECRET_ACCESS_KEY "$INPUT_SECRET_ACCESS_KEY"
-        if [ -n "$INPUT_ENDPOINT" ]; then emit SCCACHE_ENDPOINT "$INPUT_ENDPOINT"; fi
-        if [ -n "$INPUT_KEY_PREFIX" ]; then emit SCCACHE_S3_KEY_PREFIX "$INPUT_KEY_PREFIX"; fi
+        if [ -n "$INPUT_KEY_PREFIX" ]; then
+          # Written via a random-delimiter heredoc so a stray newline can't
+          # inject extra GITHUB_ENV entries.
+          d="__ghenv_$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+          { printf 'SCCACHE_GHA_VERSION<<%s\n' "$d"; printf '%s\n' "$INPUT_KEY_PREFIX"; printf '%s\n' "$d"; } >> "$GITHUB_ENV"
+        fi

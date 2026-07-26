@@ -20,11 +20,11 @@ inputs:
     description: "Public base URL the bucket is served at (e.g. https://xxx.r2.dev), used to link the badge in the PR comment."
     default: ""
   token:
-    description: "Forgejo API token for posting the PR comment. No comment if empty."
+    description: "GitHub token for posting the PR comment (secrets.GITHUB_TOKEN, needs pull-requests: write). No comment if empty."
     default: ""
   server-url:
-    description: "Forge base URL, e.g. https://codeberg.org."
-    default: ""
+    description: "GitHub API base URL. Pass ${{ github.api_url }} on GitHub Enterprise."
+    default: "https://api.github.com"
   repo:
     description: "owner/repo."
     default: ""
@@ -160,15 +160,15 @@ runs:
           marker="<!-- coverage-report -->"
           body=$(printf '%s\n## Coverage: **%s%%**  (%s vs %s)\n\n%s\n' "$marker" "$pct" "$delta" "$INPUT_DEFAULT_BRANCH" "$badge_line")
           if [ -n "$INPUT_TOKEN" ] && [ -n "$INPUT_SERVER_URL" ] && [ -n "$INPUT_REPO" ]; then
-            api="$INPUT_SERVER_URL/api/v1/repos/$INPUT_REPO/issues"
+            api="${INPUT_SERVER_URL%/}/repos/$INPUT_REPO/issues"
             payload=$(INPUT_BODY="$body" python3 -c 'import json,os;print(json.dumps({"body":os.environ["INPUT_BODY"]}))' 2>/dev/null || printf '{"body":%s}' "\"$pct%\"")
             # Update our existing marker comment if present, else create one.
-            existing=$(curl -fsS "$api/$INPUT_PR_NUMBER/comments" -H "Authorization: token $INPUT_TOKEN" 2>/dev/null \
+            existing=$(curl -fsS "$api/$INPUT_PR_NUMBER/comments" -H "Authorization: Bearer $INPUT_TOKEN" -H "Accept: application/vnd.github+json" 2>/dev/null \
               | python3 -c 'import sys,json;print(next((str(c["id"]) for c in json.load(sys.stdin) if "<!-- coverage-report -->" in (c.get("body") or "")),""))' 2>/dev/null || true)
             if [ -n "$existing" ]; then
-              curl -fsS -X PATCH "$api/comments/$existing" -H "Authorization: token $INPUT_TOKEN" -H "Content-Type: application/json" -d "$payload" >/dev/null && echo "updated PR comment" || echo "comment update failed (non-fatal)"
+              curl -fsS -X PATCH "$api/comments/$existing" -H "Authorization: Bearer $INPUT_TOKEN" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" -d "$payload" >/dev/null && echo "updated PR comment" || echo "comment update failed (non-fatal)"
             else
-              curl -fsS -X POST "$api/$INPUT_PR_NUMBER/comments" -H "Authorization: token $INPUT_TOKEN" -H "Content-Type: application/json" -d "$payload" >/dev/null && echo "posted PR comment" || echo "comment post failed (non-fatal)"
+              curl -fsS -X POST "$api/$INPUT_PR_NUMBER/comments" -H "Authorization: Bearer $INPUT_TOKEN" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" -d "$payload" >/dev/null && echo "posted PR comment" || echo "comment post failed (non-fatal)"
             fi
           fi
           if [ "$INPUT_RATCHET" = true ] && [ -n "$base" ]; then

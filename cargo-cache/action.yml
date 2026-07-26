@@ -1,24 +1,11 @@
-name: "cargo cache (S3/R2)"
-description: "Persist cargo state to an S3-compatible bucket. By default caches ~/.cargo registry + git downloads, keyed on Cargo.lock; point base/paths at the workspace target/ to also cache dependency rlibs, build-script outputs, and cargo's fingerprint DB (which sccache does not). Complements sccache (compiler codegen) so ephemeral runners stop re-fetching and re-building. Call once with mode: restore before the build, once with mode: save after. Trust: anyone with bucket write access can influence what lands in the cached dirs, so treat the bucket as trusted (same model as the sccache bucket)."
+name: "cargo cache"
+description: "Persist cargo state to the GitHub Actions cache. By default caches ~/.cargo registry + git downloads, keyed on Cargo.lock; point base/paths at the workspace target/ to also cache dependency rlibs, build-script outputs, and cargo's fingerprint DB (which sccache does not). Call once with mode: restore before the build, once with mode: save after."
 inputs:
   mode:
     description: "restore (default) or save."
     default: "restore"
-  bucket:
-    description: "Bucket name."
-    required: true
-  endpoint:
-    description: "S3 endpoint URL (e.g. https://<account>.r2.cloudflarestorage.com). Omit for AWS S3."
-    default: ""
-  access-key-id:
-    required: true
-  secret-access-key:
-    required: true
-  region:
-    description: "S3 region. R2 wants 'auto'."
-    default: "auto"
   prefix:
-    description: "Key prefix within the bucket. Also namespaces the cache, so use distinct prefixes for the registry and the target/ caches."
+    description: "Key prefix. Also namespaces the cache, so use distinct prefixes for the registry and the target/ caches."
     default: "cargo-cache"
   key:
     description: "Cache key override. Default: a hash of Cargo.lock (plus the rustc version when toolchain-key is true)."
@@ -27,22 +14,24 @@ inputs:
     description: "Mix the rustc version into the default key. Set true for target/ (artifacts are toolchain-specific); leave false for the registry."
     default: "false"
   base:
-    description: "Directory the paths are relative to, and which the tar is rooted at. Empty means $HOME."
+    description: "Directory the paths are relative to. Empty means $HOME."
     default: ""
   paths:
     description: "Space-separated dirs to cache, relative to base."
     default: ".cargo/registry/index .cargo/registry/cache .cargo/git/db"
+outputs:
+  hit:
+    description: "true when restore found an exact key match."
+    value: ${{ steps.restore.outputs.cache-hit }}
 runs:
   using: composite
   steps:
-    - shell: bash
+    # The key and the absolute path list are derived once, in shell, so restore
+    # and save cannot disagree about either.
+    - id: plan
+      shell: bash
       env:
         INPUT_MODE: ${{ inputs.mode }}
-        INPUT_BUCKET: ${{ inputs.bucket }}
-        INPUT_ENDPOINT: ${{ inputs.endpoint }}
-        INPUT_ACCESS_KEY_ID: ${{ inputs.access-key-id }}
-        INPUT_SECRET_ACCESS_KEY: ${{ inputs.secret-access-key }}
-        INPUT_REGION: ${{ inputs.region }}
         INPUT_PREFIX: ${{ inputs.prefix }}
         INPUT_KEY: ${{ inputs.key }}
         INPUT_TOOLCHAIN_KEY: ${{ inputs.toolchain-key }}
@@ -50,9 +39,6 @@ runs:
         INPUT_PATHS: ${{ inputs.paths }}
       run: |
         set -euo pipefail
-        source "$GITHUB_ACTION_PATH/../_lib/common.sh"
-        wa_s3_init
-
         base="${INPUT_BASE:-$HOME}"
 
         key="$INPUT_KEY"
@@ -69,36 +55,32 @@ runs:
             key=nolock
           fi
         fi
-        obj="s3://$INPUT_BUCKET/$INPUT_PREFIX/$key.tar.gz"
-        tmp="$(mktemp -d)/cargo-cache.tar.gz"
+        # One cache is shared by every runner on the repo, so the OS and arch
+        # belong in the key: an aarch64 target/ is not restorable on amd64.
+        full="$INPUT_PREFIX-$(uname -s)-$(uname -m)-$key"
 
-        if [ "$INPUT_MODE" = save ]; then
-          # Immutable key: skip the upload if this cache already exists.
-          if s5 ls "$obj" >/dev/null 2>&1; then
-            echo "cargo-cache: $obj already present, skipping save"
-            exit 0
-          fi
-          present=""
-          for p in $INPUT_PATHS; do
-            [ -e "$base/$p" ] && present="$present $p"
-          done
-          if [ -z "$present" ]; then
-            echo "cargo-cache: nothing to save"
-            exit 0
-          fi
-          tar -C "$base" -czf "$tmp" $present
-          s5 cp "$tmp" "$obj"
-          echo "cargo-cache: saved $obj ($(du -h "$tmp" | cut -f1))"
-        else
-          if s5 cp "$obj" "$tmp" >/dev/null 2>&1; then
-            # Reject absolute paths and `..` traversal before extracting into base.
-            if tar -tzf "$tmp" | grep -qE '^/|(^|/)\.\.(/|$)'; then
-              echo "cargo-cache: refusing cache with unsafe tar members"
-              exit 0
-            fi
-            tar -C "$base" --no-same-owner -xzf "$tmp"
-            echo "cargo-cache: restored $obj"
-          else
-            echo "cargo-cache: miss ($obj)"
-          fi
-        fi
+        # Random delimiter, so a path containing the terminator cannot inject
+        # extra GITHUB_OUTPUT entries.
+        d="__ghout_$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+        {
+          printf 'key=%s\n' "$full"
+          printf 'paths<<%s\n' "$d"
+          for p in $INPUT_PATHS; do printf '%s/%s\n' "$base" "$p"; done
+          printf '%s\n' "$d"
+        } >> "$GITHUB_OUTPUT"
+        echo "cargo-cache: $INPUT_MODE key=$full"
+
+    - id: restore
+      if: inputs.mode != 'save'
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ steps.plan.outputs.paths }}
+        key: ${{ steps.plan.outputs.key }}
+
+    # Keys are immutable: `actions/cache/save` warns and moves on when the key
+    # already exists, which is the intended "already cached, skip" path.
+    - if: inputs.mode == 'save'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ steps.plan.outputs.paths }}
+        key: ${{ steps.plan.outputs.key }}
