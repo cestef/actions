@@ -156,6 +156,32 @@ and runs coverage. Linux only.
     fail-under: ""             # e.g. "40" to enforce a floor
 ```
 
+## llvm-cov
+
+Installs [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) and runs coverage via
+LLVM source-based instrumentation. It reuses ordinary test artifacts and can drive
+nextest, so a warm run costs little more than the suite itself.
+
+```yaml
+- uses: cestef/actions/rust@github
+  with: { components: llvm-tools-preview }   # required
+- id: cov
+  uses: cestef/actions/llvm-cov@github
+  with:
+    args: --workspace
+    runner: nextest            # or test
+    format: cobertura          # or lcov
+    output: cobertura.xml
+    ignore: '(^|/)(tests|benches)/'
+    fail-under: ""             # e.g. "80"
+```
+
+Outputs `percent` and `report`. Pair it with [coverage-report](#coverage-report), which
+reads either format.
+
+Note it needs the `llvm-tools-preview` rustup component; the `rust` action takes a
+`components` input for exactly this.
+
 ## coverage-report
 
 Reads a coverage report and produces four things from that one parse, so they can never

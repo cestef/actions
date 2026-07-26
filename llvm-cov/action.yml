@@ -1,0 +1,90 @@
+name: "cargo-llvm-cov coverage"
+description: "Install cargo-llvm-cov from a prebuilt release and run coverage via LLVM source-based instrumentation. Unlike tarpaulin it reuses ordinary test artifacts and can drive nextest, so a warm run costs little more than the test suite itself. Needs the llvm-tools-preview rustup component."
+inputs:
+  version:
+    description: "cargo-llvm-cov version (without leading v). Pinned for supply-chain safety."
+    default: "0.6.24"
+  args:
+    description: "Extra args passed through to cargo-llvm-cov (e.g. '--workspace')."
+    default: "--workspace"
+  runner:
+    description: "test (cargo llvm-cov test) or nextest (cargo llvm-cov nextest)."
+    default: "nextest"
+  format:
+    description: "cobertura or lcov."
+    default: "cobertura"
+  output:
+    description: "Where to write the report."
+    default: "cobertura.xml"
+  ignore:
+    description: "Regex of source paths to exclude from the report. Empty = report everything."
+    default: ""
+  fail-under:
+    description: "Fail if total line coverage is below this percent. Empty = don't enforce."
+    default: ""
+outputs:
+  percent:
+    description: "Total line coverage percentage (e.g. 82.24)."
+    value: ${{ steps.run.outputs.percent }}
+  report:
+    description: "Path of the written report."
+    value: ${{ steps.run.outputs.report }}
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_ARGS: ${{ inputs.args }}
+        INPUT_RUNNER: ${{ inputs.runner }}
+        INPUT_FORMAT: ${{ inputs.format }}
+        INPUT_OUTPUT: ${{ inputs.output }}
+        INPUT_IGNORE: ${{ inputs.ignore }}
+        INPUT_FAIL_UNDER: ${{ inputs.fail-under }}
+      run: |
+        set -euo pipefail
+        source "$GITHUB_ACTION_PATH/../_lib/common.sh"
+        if [ "$(uname -s)" != "Linux" ]; then
+          echo "llvm-cov: Linux only"; exit 1
+        fi
+        wa_check_version "$INPUT_VERSION"
+
+        if ! command -v cargo-llvm-cov >/dev/null; then
+          arch=$(wa_arch)
+          dest="$HOME/.cargo/bin"; mkdir -p "$dest"
+          curl -fsSL "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v$INPUT_VERSION/cargo-llvm-cov-$arch-unknown-linux-musl.tar.gz" \
+            | tar -xz -C "$dest" cargo-llvm-cov
+          echo "$dest" >> "$GITHUB_PATH"
+          export PATH="$dest:$PATH"
+        fi
+        cargo llvm-cov --version
+
+        case "$INPUT_FORMAT" in
+          cobertura) fmt="--cobertura" ;;
+          lcov)      fmt="--lcov" ;;
+          *) echo "llvm-cov: unknown format '$INPUT_FORMAT' (cobertura|lcov)"; exit 1 ;;
+        esac
+        case "$INPUT_RUNNER" in
+          nextest) sub="nextest" ;;
+          test)    sub="test" ;;
+          *) echo "llvm-cov: unknown runner '$INPUT_RUNNER' (test|nextest)"; exit 1 ;;
+        esac
+        ignore=""
+        if [ -n "$INPUT_IGNORE" ]; then ignore="--ignore-filename-regex $INPUT_IGNORE"; fi
+        fu=""
+        if [ -n "$INPUT_FAIL_UNDER" ]; then fu="--fail-under-lines $INPUT_FAIL_UNDER"; fi
+
+        # One instrumented run produces both the machine report and the summary
+        # the percentage is read from, so the two can never disagree.
+        cargo llvm-cov "$sub" $fmt --output-path "$INPUT_OUTPUT" \
+          $ignore $fu $INPUT_ARGS
+        cargo llvm-cov report --summary-only $ignore $INPUT_ARGS 2>&1 | tee /tmp/llvm-cov.out
+
+        # The TOTAL row's last percentage is the line-coverage figure.
+        pct=$(awk '/^TOTAL/ { for (i=NF; i>0; i--) if ($i ~ /%$/) { gsub(/%/,"",$i); print $i; exit } }' /tmp/llvm-cov.out)
+        {
+          echo "percent=${pct:-0}"
+          echo "report=$INPUT_OUTPUT"
+        } >> "$GITHUB_OUTPUT"
+        echo "coverage: ${pct:-unknown}%  ->  $INPUT_OUTPUT"
