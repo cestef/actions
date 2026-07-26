@@ -118,16 +118,36 @@ class Coverage:
         covered, total = self.files.get(path, (0, 0))
         return 100.0 * covered / total if total else None
 
-    def state(self, commit):
+    # Fields that describe *when* a measurement happened rather than *what* it
+    # was. They change on every run, so they are excluded when deciding whether
+    # anything is worth publishing.
+    VOLATILE = ("commit", "updated")
+
+    def state(self, commit, badge_key):
         return {
             "schema": SCHEMA,
             "percent": round(self.percent, 2),
             "covered": self.covered,
             "total": self.total,
+            # Identifies the rendered badge, so a changed label or palette
+            # republishes even when the numbers are identical.
+            "badge": badge_key,
             "commit": commit,
             "updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "files": {k: list(v) for k, v in sorted(self.files.items())},
         }
+
+    @classmethod
+    def differs(cls, new, old):
+        """Whether `new` state is worth publishing over `old`.
+
+        Compared on substance only: without this, the timestamp alone lands a
+        commit on the badge branch for every push, forever.
+        """
+        if not old:
+            return True
+        strip = lambda d: {k: v for k, v in d.items() if k not in cls.VOLATILE}
+        return strip(new) != strip(old)
 
 
 # --- badges ----------------------------------------------------------------
@@ -403,18 +423,27 @@ def main():
     stage = env("STAGE") or "/tmp/coverage-report"
     target = os.path.join(stage, prefix) if prefix else stage
     os.makedirs(target, exist_ok=True)
+    style = env("BADGE_STYLE", "gauge") or "gauge"
+    label_color = env("BADGE_LABEL_COLOR", "#24292f") or "#24292f"
+    color = Badge.color_for(cov.percent, env("BADGE_THRESHOLDS"))
     badge = Badge.of(
-        env("BADGE_STYLE", "gauge") or "gauge",
+        style,
         label=label,
         value=f"{cov.percent:.1f}%",
         percent=cov.percent,
-        color=Badge.color_for(cov.percent, env("BADGE_THRESHOLDS")),
-        label_color=env("BADGE_LABEL_COLOR", "#24292f") or "#24292f",
+        color=color,
+        label_color=label_color,
     )
     with open(os.path.join(target, badge_file), "w") as handle:
         handle.write(badge.render())
+    # Everything that shapes the rendered SVG, so a relabelled or recoloured
+    # badge republishes even when the coverage numbers have not moved.
+    state = cov.state(env("COMMIT"), "|".join((style, label, color, label_color)))
     with open(os.path.join(target, state_file), "w") as handle:
-        json.dump(cov.state(env("COMMIT")), handle, indent=1, sort_keys=True)
+        json.dump(state, handle, indent=1, sort_keys=True)
+    changed = Coverage.differs(state, baseline)
+    if not changed:
+        print("coverage-report: unchanged, nothing to publish")
 
     # Ratchet: a pull request may not drop below the baseline minus a tolerance.
     note, failed = "", False
@@ -447,6 +476,7 @@ def main():
             handle.write(f"covered={cov.covered}\n")
             handle.write(f"total={cov.total}\n")
             handle.write(f"stage={stage}\n")
+            handle.write(f"changed={'true' if changed else 'false'}\n")
 
     if failed:
         print(f"::error::coverage {cov.percent:.2f}% is below the ratchet floor")

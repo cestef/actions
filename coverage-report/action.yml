@@ -97,6 +97,9 @@ inputs:
     default: "41898282+github-actions[bot]@users.noreply.github.com"
 
 outputs:
+  changed:
+    description: "true when the coverage or the badge differs from the published baseline."
+    value: ${{ steps.report.outputs.changed }}
   percent:
     description: "Total line coverage, two decimals."
     value: ${{ steps.report.outputs.percent }}
@@ -146,6 +149,7 @@ runs:
     - if: >-
         inputs.publish == 'true' && inputs.token != ''
         && inputs.event-name == 'push' && inputs.ref-name == inputs.default-branch
+        && steps.report.outputs.changed == 'true'
       shell: bash
       env:
         INPUT_BRANCH: ${{ inputs.branch }}
