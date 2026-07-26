@@ -74,12 +74,18 @@ so the build steps can see them.
 Installs [cargo-nextest](https://nexte.st) and, optionally, runs the suite.
 
 ```yaml
-- uses: cestef/actions/nextest@github
+- id: tests
+  uses: cestef/actions/nextest@github
   with:
     version: latest
     run: "true"
     args: "--workspace --no-tests warn"
 ```
+
+Outputs `passed`, `failed`, `skipped`, `total` and `percent`, scraped from the run's own
+summary (escape codes stripped first, so `CARGO_TERM_COLOR=always` does not break it).
+The step still exits with the suite's status, so counts are available on a failure too —
+pair it with [badge](#badge) and `if: always()` for a pass-rate badge that goes red.
 
 ## musl
 

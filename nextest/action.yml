@@ -10,10 +10,27 @@ inputs:
   args:
     description: "Args passed to 'cargo nextest run'."
     default: "--workspace --no-tests warn"
+outputs:
+  passed:
+    description: "Tests that passed."
+    value: ${{ steps.run.outputs.passed }}
+  failed:
+    description: "Tests that failed."
+    value: ${{ steps.run.outputs.failed }}
+  skipped:
+    description: "Tests that were skipped."
+    value: ${{ steps.run.outputs.skipped }}
+  total:
+    description: "Tests run (passed + failed)."
+    value: ${{ steps.run.outputs.total }}
+  percent:
+    description: "Pass rate 0-100, two decimals. 0 when nothing ran."
+    value: ${{ steps.run.outputs.percent }}
 runs:
   using: composite
   steps:
-    - shell: bash
+    - id: run
+      shell: bash
       env:
         INPUT_VERSION: ${{ inputs.version }}
         INPUT_RUN: ${{ inputs.run }}
@@ -38,6 +55,28 @@ runs:
         fi
         cargo nextest --version
 
-        if [ "$INPUT_RUN" = "true" ]; then
-          cargo nextest run $INPUT_ARGS
+        if [ "$INPUT_RUN" != "true" ]; then
+          exit 0
         fi
+
+        # Keep the exit status of the run itself, not of the tee, so a failing
+        # suite still fails the step after the counts have been recorded.
+        set +e
+        cargo nextest run $INPUT_ARGS 2>&1 | tee /tmp/nextest.out
+        status=${PIPESTATUS[0]}
+        set -e
+
+        # `CARGO_TERM_COLOR=always` is common in CI, so strip escapes before
+        # reading the summary rather than assuming plain text.
+        summary=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' /tmp/nextest.out | grep -E "tests run:" | tail -1)
+        num() { printf '%s' "$summary" | grep -oE "[0-9]+ $1" | grep -oE "^[0-9]+" || true; }
+        run=$(printf '%s' "$summary" | grep -oE "[0-9]+ tests run" | grep -oE "^[0-9]+" || true)
+        passed=$(num passed); failed=$(num failed); skipped=$(num skipped)
+        run=${run:-0}; passed=${passed:-0}; failed=${failed:-0}; skipped=${skipped:-0}
+        pct=$(awk -v p="$passed" -v t="$run" 'BEGIN{ printf "%.2f", (t>0 ? 100*p/t : 0) }')
+        {
+          echo "passed=$passed"; echo "failed=$failed"
+          echo "skipped=$skipped"; echo "total=$run"; echo "percent=$pct"
+        } >> "$GITHUB_OUTPUT"
+        echo "nextest: $passed/$run passed ($pct%), $failed failed, $skipped skipped"
+        exit "$status"
