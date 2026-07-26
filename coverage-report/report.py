@@ -15,12 +15,25 @@ import hashlib
 import json
 import os
 import sys
+import typing
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
-SCHEMA = 1
+SCHEMA = 2
+
+
+class Geom(typing.NamedTuple):
+    """Everything a badge style needs to lay its bars out."""
+
+    label_w: float
+    value_w: float
+    width: float
+    height: int
+    fraction: float
+    color: str
+    label_color: str
 
 
 def env(name, default=""):
@@ -130,8 +143,11 @@ class Coverage:
             "percent": round(self.percent, 2),
             "covered": self.covered,
             "total": self.total,
-            # Identifies the rendered badge, so a changed label or palette
-            # republishes even when the numbers are identical.
+            # A digest of the rendered SVG. Keying on the *output* rather than
+            # on the inputs that produce it means a change to the renderer
+            # itself republishes too: keying on style/label/colour once left a
+            # badge with 1px text pinned in place, because none of those had
+            # moved and the fix therefore looked like a no-op.
             "badge": badge_key,
             "commit": commit,
             "updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -157,34 +173,60 @@ class Coverage:
 class Flat:
     """The classic two-slab badge: label on the left, value on the right."""
 
+    BAR = 0
+
     def bars(self, geom):
-        label_w, value_w, _, height, color, label_color = geom
         return (
-            f'<rect width="{label_w}" height="{height}" fill="{label_color}"/>'
-            f'<rect x="{label_w}" width="{value_w}" height="{height}" fill="{color}"/>'
+            f'<rect width="{geom.label_w}" height="{geom.height}" fill="{geom.label_color}"/>'
+            f'<rect x="{geom.label_w}" width="{geom.value_w}" height="{geom.height}"'
+            f' fill="{geom.color}"/>'
         )
 
 
 class Gauge:
     """Two slabs, but the value slab is a fill gauge.
 
-    The colored fill spans the coverage fraction of the value half over a muted
-    track, so the badge carries the number as a shape before the text is read.
+    Reads as a proportion at a glance, at the cost of putting the value text
+    over two different backgrounds.
     """
 
     TRACK = "#30363d"
+    BAR = 0
 
     def bars(self, geom):
-        label_w, value_w, percent, height, color, label_color = geom
-        fill = round(value_w * max(0.0, min(percent, 100.0)) / 100.0, 1)
+        fill = round(geom.value_w * geom.fraction, 1)
         return (
-            f'<rect width="{label_w}" height="{height}" fill="{label_color}"/>'
-            f'<rect x="{label_w}" width="{value_w}" height="{height}" fill="{self.TRACK}"/>'
-            f'<rect x="{label_w}" width="{fill}" height="{height}" fill="{color}"/>'
+            f'<rect width="{geom.label_w}" height="{geom.height}" fill="{geom.label_color}"/>'
+            f'<rect x="{geom.label_w}" width="{geom.value_w}" height="{geom.height}"'
+            f' fill="{self.TRACK}"/>'
+            f'<rect x="{geom.label_w}" width="{fill}" height="{geom.height}"'
+            f' fill="{geom.color}"/>'
         )
 
 
-STYLES = {"flat": Flat, "gauge": Gauge}
+class Meter:
+    """One solid field, with the proportion as a rule along the bottom edge.
+
+    Every glyph sits on the same background, so contrast never depends on where
+    the fill happens to end -- the failure mode of any badge that runs text over
+    a partial fill. The colour still carries the reading twice: the value text
+    and the rule beneath it.
+    """
+
+    TRACK = "#30363d"
+    BAR = 3
+
+    def bars(self, geom):
+        fill = round(geom.width * geom.fraction, 1)
+        y = geom.height - self.BAR
+        return (
+            f'<rect width="{geom.width}" height="{geom.height}" fill="{geom.label_color}"/>'
+            f'<rect y="{y}" width="{geom.width}" height="{self.BAR}" fill="{self.TRACK}"/>'
+            f'<rect y="{y}" width="{fill}" height="{self.BAR}" fill="{geom.color}"/>'
+        )
+
+
+STYLES = {"flat": Flat, "gauge": Gauge, "meter": Meter}
 
 
 class Badge:
@@ -254,28 +296,46 @@ class Badge:
     def escape(text):
         return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-    def _text(self, centre, body, raw, weight):
-        # Drawn twice: a translucent black copy one pixel lower is the drop
-        # shadow that keeps white text legible over a light fill.
+    def _text(self, centre, body, raw, weight, fill, shadow=True):
+        # Drawn twice where a shadow is wanted: a translucent black copy one
+        # pixel lower keeps light text legible over a light fill.
         length = round(self.text_width(raw), 1)
         common = (
             f'text-anchor="middle" textLength="{length}" '
             f'lengthAdjust="spacingAndGlyphs" font-weight="{weight}"'
         )
         x = round(centre, 1)
-        return (
+        under = (
             f'<text x="{x}" y="{self.BASELINE + 1}" fill="#010101" '
             f'fill-opacity=".25" {common}>{body}</text>'
-            f'<text x="{x}" y="{self.BASELINE}" fill="#fff" {common}>{body}</text>'
+            if shadow
+            else ""
+        )
+        return under + (
+            f'<text x="{x}" y="{self.BASELINE}" fill="{fill}" {common}>{body}</text>'
         )
 
     def render(self):
         label, value = self.escape(self.label), self.escape(self.value)
         label_w, value_w = self.slab(self.label), self.slab(self.value)
-        width, height = round(label_w + value_w, 1), self.HEIGHT
-        bars = self.style.bars(
-            (label_w, value_w, self.percent, height, self.color, self.label_color)
+        width = round(label_w + value_w, 1)
+        height = self.HEIGHT + getattr(self.style, "BAR", 0)
+        geom = Geom(
+            label_w=label_w,
+            value_w=value_w,
+            width=width,
+            height=height,
+            fraction=max(0.0, min(self.percent, 100.0)) / 100.0,
+            color=self.color,
+            label_color=self.label_color,
         )
+        # A style that paints one flat field wants the value in the accent
+        # colour and no shadow; a style that paints coloured slabs wants white
+        # text with a shadow to survive whatever is behind it.
+        solid = getattr(self.style, "BAR", 0) > 0
+        label_fill = "#adbac7" if solid else "#fff"
+        value_fill = self.color if solid else "#fff"
+
         # The id is per-badge, so two badges inlined in one document do not share
         # a clip path. Derived from a stable digest rather than hash(), which is
         # salted per process and would change the bytes on every run.
@@ -288,13 +348,12 @@ class Badge:
             f"<title>{label}: {value}</title>"
             f'<clipPath id="{cid}">'
             f'<rect width="{width}" height="{height}" rx="{self.RADIUS}"/></clipPath>'
-            f'<g clip-path="url(#{cid})" shape-rendering="crispEdges">{bars}'
-            f'<rect y="{height - 1}" width="{width}" height="1" fill="#000"'
-            f' fill-opacity=".2"/></g>'
+            f'<g clip-path="url(#{cid})" shape-rendering="crispEdges">'
+            f"{self.style.bars(geom)}</g>"
             f'<g font-family="Verdana,DejaVu Sans,Noto Sans,Geneva,sans-serif"'
             f' font-size="{self.FONT}">'
-            f"{self._text(label_w / 2, label, self.label, 'normal')}"
-            f"{self._text(label_w + value_w / 2, value, self.value, 'bold')}"
+            f"{self._text(label_w / 2, label, self.label, 'normal', label_fill, not solid)}"
+            f"{self._text(label_w + value_w / 2, value, self.value, 'bold', value_fill, not solid)}"
             f"</g></svg>\n"
         )
 
@@ -463,7 +522,7 @@ def main():
     stage = env("STAGE") or "/tmp/coverage-report"
     target = os.path.join(stage, prefix) if prefix else stage
     os.makedirs(target, exist_ok=True)
-    style = env("BADGE_STYLE", "gauge") or "gauge"
+    style = env("BADGE_STYLE", "meter") or "meter"
     label_color = env("BADGE_LABEL_COLOR", "#24292f") or "#24292f"
     color = Badge.color_for(cov.percent, env("BADGE_THRESHOLDS"))
     badge = Badge.of(
@@ -474,11 +533,10 @@ def main():
         color=color,
         label_color=label_color,
     )
+    svg = badge.render()
     with open(os.path.join(target, badge_file), "w") as handle:
-        handle.write(badge.render())
-    # Everything that shapes the rendered SVG, so a relabelled or recoloured
-    # badge republishes even when the coverage numbers have not moved.
-    state = cov.state(env("COMMIT"), "|".join((style, label, color, label_color)))
+        handle.write(svg)
+    state = cov.state(env("COMMIT"), hashlib.sha1(svg.encode()).hexdigest()[:16])
     with open(os.path.join(target, state_file), "w") as handle:
         json.dump(state, handle, indent=1, sort_keys=True)
     changed = Coverage.differs(state, baseline)

@@ -27,8 +27,8 @@ inputs:
 
   # --- badge ---
   badge-style:
-    description: "gauge (value half doubles as a fill bar) or flat."
-    default: "gauge"
+    description: "meter (one field, proportion as a rule along the bottom), gauge (value half is the fill), or flat."
+    default: "meter"
   badge-label:
     default: "coverage"
   badge-label-color:

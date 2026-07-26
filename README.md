@@ -218,10 +218,17 @@ everything downstream is format-agnostic. Adding one is a class plus a line in `
 
 ### Badge styles
 
-`badge-style: gauge` (default) makes the value half a fill bar: the colored region spans
-the coverage fraction over a muted track, so the badge reads as a number *and* a shape.
-`badge-style: flat` is the classic two-slab badge. Colors come from `badge-thresholds`,
-a comma list of `min:color` highest-first.
+`badge-style: meter` (default) paints one solid field and puts the proportion in a rule
+along the bottom edge, with the value in the threshold colour. Every glyph sits on the
+same background, so contrast never depends on where the fill happens to end — the
+failure mode of any badge that runs text over a partial fill.
+
+`gauge` makes the value half itself the fill bar; `flat` is the classic two-slab badge.
+Colours come from `badge-thresholds`, a comma list of `min:color` highest-first.
+
+Text is laid out from measured font metrics and pinned with `textLength`, so a viewer
+resolving Verdana, DejaVu Sans, Noto or nothing at all gets the same badge: the glyphs
+adjust to the box rather than the box guessing at the glyphs.
 
 ### Everything else is an input
 
