@@ -190,8 +190,9 @@ delta and the per-file movement, and an optional **ratchet** gate (a PR may not 
 below the baseline minus a tolerance).
 
 State lives on an orphan branch of the repo itself — no bucket, no credentials beyond the
-workflow token. A default-branch push writes the badge and the baseline; pull requests
-read them and never move them.
+workflow token. A run on the default branch writes the badge and the baseline; pull
+requests read them and never move them. Any event but `pull_request` may publish, so
+coverage can sit on a nightly `schedule` instead of the push path when it is slow.
 
 ```yaml
 - uses: cestef/actions/tarpaulin@github

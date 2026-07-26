@@ -144,11 +144,17 @@ runs:
         INPUT_STAGE: ${{ runner.temp }}/coverage-report
       run: python3 "$GITHUB_ACTION_PATH/report.py"
 
-    # Publishing is a default-branch push only: a pull request reports and gates
-    # but never moves the baseline it is measured against.
+    # Publishing is for the default branch only: a pull request reports and
+    # gates but never moves the baseline it is measured against.
+    #
+    # Any event but `pull_request` qualifies, rather than `push` specifically,
+    # so a scheduled or manually dispatched run on the default branch can also
+    # refresh the baseline. That is the shape you get when coverage is too slow
+    # to sit on the push path and runs nightly instead.
     - if: >-
         inputs.publish == 'true' && inputs.token != ''
-        && inputs.event-name == 'push' && inputs.ref-name == inputs.default-branch
+        && inputs.event-name != 'pull_request'
+        && inputs.ref-name == inputs.default-branch
         && steps.report.outputs.changed == 'true'
       shell: bash
       env:
