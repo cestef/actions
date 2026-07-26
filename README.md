@@ -154,35 +154,57 @@ and runs coverage. Linux only.
 
 ## coverage-report
 
-Turns a coverage percentage (e.g. from `tarpaulin`) into something useful, all
-self-hosted on an S3/R2 bucket: a shields-style **SVG badge**, a per-PR **comment**
-with the delta vs the default branch, and an optional **ratchet** gate (a PR can't drop
-coverage below the baseline minus a tolerance). The baseline lives in the bucket — the
-default branch writes it, PRs read it.
+Reads a coverage report and produces four things from that one parse, so they can never
+disagree: an **SVG badge**, a **job summary** table, a **pull-request comment** with the
+delta and the per-file movement, and an optional **ratchet** gate (a PR may not drop
+below the baseline minus a tolerance).
+
+State lives on an orphan branch of the repo itself — no bucket, no credentials beyond the
+workflow token. A default-branch push writes the badge and the baseline; pull requests
+read them and never move them.
 
 ```yaml
-- id: cov
-  uses: cestef/actions/tarpaulin@github
+- uses: cestef/actions/tarpaulin@github
   with: { out: "Stdout Xml" }
 - uses: cestef/actions/coverage-report@github
   with:
-    percent: ${{ steps.cov.outputs.percent }}
-    bucket: my-badges              # a public bucket, for the badge URL
-    endpoint: ${{ secrets.R2_ENDPOINT }}
-    access-key-id: ${{ secrets.R2_BADGE_ACCESS_KEY_ID }}
-    secret-access-key: ${{ secrets.R2_BADGE_SECRET_ACCESS_KEY }}
-    public-url: https://<id>.r2.dev          # where the bucket is served
-    token: ${{ secrets.GITHUB_TOKEN }}       # for the PR comment (pull-requests: write)
-    server-url: ${{ github.api_url }}
-    repo: ${{ github.repository }}
-    event-name: ${{ github.event_name }}
-    ref-name: ${{ github.ref_name }}
-    pr-number: ${{ github.event.pull_request.number }}
+    file: cobertura.xml            # or an lcov .info; `format` defaults to auto
+    token: ${{ secrets.GITHUB_TOKEN }}
     ratchet: "true"
+    badge-label: coverage
 ```
 
-Badge: `![coverage](https://<id>.r2.dev/coverage.svg)`. The bucket needs write access
-scoped to the token you pass (a public R2 bucket with `wrangler r2 bucket dev-url enable`).
+The job needs `permissions: { contents: write, pull-requests: write }` — `contents` to
+push the badge branch, `pull-requests` to comment.
+
+Badge: `![coverage](https://raw.githubusercontent.com/<owner>/<repo>/badges/coverage.svg)`.
+
+### Formats
+
+`format: auto` picks by extension: `.xml` is cobertura (tarpaulin, coverage.py, gcovr),
+`.info`/`.lcov` is LCOV (llvm-cov, grcov, nyc). Both reduce to per-file line counts, so
+everything downstream is format-agnostic. Adding one is a class plus a line in `SOURCES`.
+
+### Badge styles
+
+`badge-style: gauge` (default) makes the value half a fill bar: the colored region spans
+the coverage fraction over a muted track, so the badge reads as a number *and* a shape.
+`badge-style: flat` is the classic two-slab badge. Colors come from `badge-thresholds`,
+a comma list of `min:color` highest-first.
+
+### Everything else is an input
+
+`branch` and `path-prefix` (one branch can host several projects), `badge-file` /
+`state-file`, `top` (rows before the rest collapse into a `<details>`), `marker` (which
+comment to update), `tolerance`, `default-branch`, `commit-message` / `commit-user` /
+`commit-email`, and `summary` / `comment` / `publish` / `badge-link` to turn any surface
+off. `server-url`, `raw-url` and `git-url` default to the current forge, so GitHub
+Enterprise is a matter of pointing them elsewhere.
+
+Outputs: `percent`, `delta`, `covered`, `total`.
+
+Without a `token` it still parses, renders the badge into the runner temp dir and writes
+the summary — it just cannot read a baseline, comment, or publish.
 
 ## wrangler
 
@@ -232,8 +254,11 @@ containing a newline cannot inject extra entries.
 `sccache`, `cargo-cache` and `wrangler` store to the GitHub Actions cache, which is
 scoped per repository and per branch: a pull request reads the base branch's entries but
 writes only its own, so a fork PR cannot poison what a later default-branch build
-restores. `coverage-report` still writes its badge and baseline to an S3/R2 bucket, since
-a badge needs public hosting; treat that bucket as trusted.
+restores. `coverage-report` pushes only to its own orphan branch, with the token in a
+git header rather than the remote URL so it cannot surface in git's error output.
+
+No action in this branch needs a cloud credential: everything persists in the GitHub
+Actions cache or in the repository itself.
 
 ## License
 

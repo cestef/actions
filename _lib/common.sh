@@ -18,29 +18,3 @@ wa_arch() {
     *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
   esac
 }
-
-# Install s5cmd (if missing) and export S3 creds/region. Expects these env vars set by
-# the action: INPUT_ACCESS_KEY_ID, INPUT_SECRET_ACCESS_KEY, INPUT_REGION. Pair with s5().
-wa_s3_init() {
-  if ! command -v s5cmd >/dev/null; then
-    local a sl ver=2.3.0 d="$HOME/.local/bin"
-    a=$(wa_arch)
-    case "$a" in
-      x86_64)  sl=Linux-64bit ;;
-      aarch64) sl=Linux-arm64 ;;
-    esac
-    mkdir -p "$d"
-    curl -fsSL "https://github.com/peak/s5cmd/releases/download/v$ver/s5cmd_${ver}_${sl}.tar.gz" \
-      | tar -xz -C "$d" s5cmd
-    export PATH="$d:$PATH"
-    echo "$d" >> "$GITHUB_PATH"
-  fi
-  export AWS_ACCESS_KEY_ID="$INPUT_ACCESS_KEY_ID"
-  export AWS_SECRET_ACCESS_KEY="$INPUT_SECRET_ACCESS_KEY"
-  export AWS_REGION="$INPUT_REGION" AWS_DEFAULT_REGION="$INPUT_REGION"
-}
-
-# Run s5cmd against INPUT_ENDPOINT if set (R2), else default AWS S3.
-s5() {
-  if [ -n "${INPUT_ENDPOINT:-}" ]; then s5cmd --endpoint-url "$INPUT_ENDPOINT" "$@"; else s5cmd "$@"; fi
-}

@@ -1,182 +1,185 @@
 name: "coverage report"
-description: "Turn a coverage percentage into something useful: a self-hosted SVG badge on S3/R2, a per-PR comment with the delta vs the default branch, and an optional ratchet gate. Baseline is stored in the bucket (default branch writes it, PRs read it)."
+description: "Turn a coverage report into a badge, a job summary, a pull-request comment and an optional ratchet gate. State lives on an orphan branch of the repo itself, so it needs no bucket and no credentials beyond the workflow token. Format-agnostic (cobertura, lcov) and every surface is optional."
 inputs:
-  percent:
-    description: "Total coverage percentage, e.g. 60.4."
-    required: true
-  bucket:
-    description: "S3/R2 bucket for the baseline and (public) badge."
-    required: true
-  endpoint:
-    description: "S3 endpoint URL (e.g. https://<account>.r2.cloudflarestorage.com)."
-    default: ""
-  access-key-id:
-    required: true
-  secret-access-key:
-    required: true
-  region:
+  # --- input report ---
+  file:
+    description: "Coverage report to read."
+    default: "cobertura.xml"
+  format:
+    description: "auto (by extension), cobertura, or lcov."
     default: "auto"
-  public-url:
-    description: "Public base URL the bucket is served at (e.g. https://xxx.r2.dev), used to link the badge in the PR comment."
+
+  # --- where state lives ---
+  branch:
+    description: "Orphan branch holding the badge and the baseline."
+    default: "badges"
+  path-prefix:
+    description: "Subdirectory within the branch, so one branch can hold several projects."
     default: ""
-  token:
-    description: "GitHub token for posting the PR comment (secrets.GITHUB_TOKEN, needs pull-requests: write). No comment if empty."
-    default: ""
-  server-url:
-    description: "GitHub API base URL. Pass ${{ github.api_url }} on GitHub Enterprise."
-    default: "https://api.github.com"
-  repo:
-    description: "owner/repo."
-    default: ""
-  event-name:
-    description: "push or pull_request."
-    default: ""
-  ref-name:
-    description: "Branch name of the push."
-    default: ""
-  pr-number:
-    description: "Pull-request index (for the comment)."
-    default: ""
-  default-branch:
-    default: "main"
+  badge-file:
+    default: "coverage.svg"
+  state-file:
+    description: "Baseline JSON: total, per-file counts, and the commit it came from."
+    default: "coverage.json"
+  publish:
+    description: "Push the badge and baseline. Only ever happens on a default-branch push."
+    default: "true"
+
+  # --- badge ---
+  badge-style:
+    description: "gauge (value half doubles as a fill bar) or flat."
+    default: "gauge"
+  badge-label:
+    default: "coverage"
+  badge-label-color:
+    default: "#24292f"
+  badge-thresholds:
+    description: "Comma list of min-percent:color, highest first. First entry whose min <= coverage wins."
+    default: "90:#3fb950,75:#7bc62d,60:#d5b60a,40:#e0902f,0:#e5534b"
+  badge-link:
+    description: "Embed the badge image in the summary and comment."
+    default: "true"
+
+  # --- surfaces ---
+  summary:
+    description: "Write the report to the job summary."
+    default: "true"
+  comment:
+    description: "Upsert a pull-request comment."
+    default: "true"
+  marker:
+    description: "Hidden HTML marker identifying this action's comment, so it updates instead of piling up."
+    default: "<!-- coverage-report -->"
+  top:
+    description: "Per-file rows shown before the rest collapse into a <details>."
+    default: "10"
+
+  # --- gate ---
   ratchet:
-    description: "Fail if a PR drops coverage below (baseline - tolerance)."
+    description: "Fail a pull request that drops below (baseline - tolerance)."
     default: "false"
   tolerance:
     description: "Allowed coverage drop, in percentage points."
     default: "0.5"
-  badge-label:
-    description: "Left-side text on the badge."
-    default: "coverage"
-  badge-label-color:
-    description: "Left-side background color."
-    default: "#2b2f36"
-  badge-thresholds:
-    description: "Comma list of min-percent:color, highest first. First entry whose min <= coverage wins."
-    default: "90:#3fb950,75:#7bc62d,60:#d5b60a,40:#e0902f,0:#e5534b"
+
+  # --- forge ---
+  token:
+    description: "Token for reading the baseline, commenting, and pushing. Without it the action still renders locally."
+    default: ""
+  repo:
+    description: "owner/repo."
+    default: ${{ github.repository }}
+  server-url:
+    description: "REST API base."
+    default: ${{ github.api_url }}
+  raw-url:
+    description: "Raw content host, used to build the badge URL."
+    default: "https://raw.githubusercontent.com"
+  git-url:
+    description: "Git host used to push the badge branch."
+    default: ${{ github.server_url }}
+  event-name:
+    default: ${{ github.event_name }}
+  ref-name:
+    default: ${{ github.ref_name }}
+  pr-number:
+    default: ${{ github.event.pull_request.number }}
+  commit:
+    description: "Commit the coverage belongs to, recorded in the baseline."
+    default: ${{ github.sha }}
+  default-branch:
+    default: "main"
+  commit-message:
+    default: "chore: coverage badge"
+  commit-user:
+    default: "github-actions[bot]"
+  commit-email:
+    default: "41898282+github-actions[bot]@users.noreply.github.com"
+
+outputs:
+  percent:
+    description: "Total line coverage, two decimals."
+    value: ${{ steps.report.outputs.percent }}
+  delta:
+    description: "Signed change vs the baseline, or n/a."
+    value: ${{ steps.report.outputs.delta }}
+  covered:
+    value: ${{ steps.report.outputs.covered }}
+  total:
+    value: ${{ steps.report.outputs.total }}
+
 runs:
   using: composite
   steps:
-    - shell: bash
+    - id: report
+      shell: bash
       env:
-        INPUT_PERCENT: ${{ inputs.percent }}
-        INPUT_BUCKET: ${{ inputs.bucket }}
-        INPUT_ENDPOINT: ${{ inputs.endpoint }}
-        INPUT_ACCESS_KEY_ID: ${{ inputs.access-key-id }}
-        INPUT_SECRET_ACCESS_KEY: ${{ inputs.secret-access-key }}
-        INPUT_REGION: ${{ inputs.region }}
-        INPUT_PUBLIC_URL: ${{ inputs.public-url }}
-        INPUT_TOKEN: ${{ inputs.token }}
-        INPUT_SERVER_URL: ${{ inputs.server-url }}
-        INPUT_REPO: ${{ inputs.repo }}
-        INPUT_EVENT_NAME: ${{ inputs.event-name }}
-        INPUT_REF_NAME: ${{ inputs.ref-name }}
-        INPUT_PR_NUMBER: ${{ inputs.pr-number }}
-        INPUT_DEFAULT_BRANCH: ${{ inputs.default-branch }}
-        INPUT_RATCHET: ${{ inputs.ratchet }}
-        INPUT_TOLERANCE: ${{ inputs.tolerance }}
+        INPUT_FILE: ${{ inputs.file }}
+        INPUT_FORMAT: ${{ inputs.format }}
+        INPUT_BRANCH: ${{ inputs.branch }}
+        INPUT_PATH_PREFIX: ${{ inputs.path-prefix }}
+        INPUT_BADGE_FILE: ${{ inputs.badge-file }}
+        INPUT_STATE_FILE: ${{ inputs.state-file }}
+        INPUT_BADGE_STYLE: ${{ inputs.badge-style }}
         INPUT_BADGE_LABEL: ${{ inputs.badge-label }}
         INPUT_BADGE_LABEL_COLOR: ${{ inputs.badge-label-color }}
         INPUT_BADGE_THRESHOLDS: ${{ inputs.badge-thresholds }}
+        INPUT_BADGE_LINK: ${{ inputs.badge-link }}
+        INPUT_SUMMARY: ${{ inputs.summary }}
+        INPUT_COMMENT: ${{ inputs.comment }}
+        INPUT_MARKER: ${{ inputs.marker }}
+        INPUT_TOP: ${{ inputs.top }}
+        INPUT_RATCHET: ${{ inputs.ratchet }}
+        INPUT_TOLERANCE: ${{ inputs.tolerance }}
+        INPUT_TOKEN: ${{ inputs.token }}
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_SERVER_URL: ${{ inputs.server-url }}
+        INPUT_RAW_URL: ${{ inputs.raw-url }}
+        INPUT_EVENT_NAME: ${{ inputs.event-name }}
+        INPUT_PR_NUMBER: ${{ inputs.pr-number }}
+        INPUT_COMMIT: ${{ inputs.commit }}
+        INPUT_STAGE: ${{ runner.temp }}/coverage-report
+      run: python3 "$GITHUB_ACTION_PATH/report.py"
+
+    # Publishing is a default-branch push only: a pull request reports and gates
+    # but never moves the baseline it is measured against.
+    - if: >-
+        inputs.publish == 'true' && inputs.token != ''
+        && inputs.event-name == 'push' && inputs.ref-name == inputs.default-branch
+      shell: bash
+      env:
+        INPUT_BRANCH: ${{ inputs.branch }}
+        INPUT_TOKEN: ${{ inputs.token }}
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_GIT_URL: ${{ inputs.git-url }}
+        INPUT_MESSAGE: ${{ inputs.commit-message }}
+        INPUT_USER: ${{ inputs.commit-user }}
+        INPUT_EMAIL: ${{ inputs.commit-email }}
+        STAGE: ${{ steps.report.outputs.stage }}
       run: |
         set -euo pipefail
-        source "$GITHUB_ACTION_PATH/../_lib/common.sh"
-        pct="$INPUT_PERCENT"
-        wa_s3_init
+        # The token goes in a header rather than the remote URL, so it cannot be
+        # echoed back by git's own error messages.
+        auth="AUTHORIZATION: Basic $(printf 'x-access-token:%s' "$INPUT_TOKEN" | base64 -w0)"
+        remote="${INPUT_GIT_URL%/}/$INPUT_REPO.git"
 
-        # Read the stored baseline (default-branch coverage), if any.
-        base=""
-        if s5 cp "s3://$INPUT_BUCKET/coverage/baseline.txt" /tmp/baseline.txt >/dev/null 2>&1; then
-          base=$(tr -dc '0-9.' < /tmp/baseline.txt)
+        work=$(mktemp -d)
+        git init -q -b "$INPUT_BRANCH" "$work"
+        git -C "$work" remote add origin "$remote"
+        # An existing branch is extended; a missing one starts as a fresh orphan,
+        # so the badge branch never carries the repository's own history.
+        if git -C "$work" -c http.extraheader="$auth" fetch -q --depth 1 origin "$INPUT_BRANCH"; then
+          git -C "$work" reset -q --hard FETCH_HEAD
         fi
 
-        # Delta string vs baseline.
-        delta="n/a"
-        if [ -n "$base" ]; then
-          delta=$(awk -v p="$pct" -v b="$base" 'BEGIN{ d=p-b; printf "%+.2f", d }')
+        cp -R "$STAGE"/. "$work"/
+        git -C "$work" add -A
+        if git -C "$work" diff --cached --quiet; then
+          echo "coverage-report: badge and baseline unchanged"
+          exit 0
         fi
-        echo "coverage=$pct% baseline=${base:-none} delta=$delta"
-
-        # Render a flat SVG badge, colored by threshold. Widths are computed
-        # from the text so wide values (e.g. 100.0%) never overflow.
-        label="$INPUT_BADGE_LABEL"
-        lcol="$INPUT_BADGE_LABEL_COLOR"
-        pi=${pct%.*}; pi=${pi:-0}
-        # Pick the first "min:color" entry whose min <= coverage.
-        col="#e5534b"
-        IFS=',' read -ra _thr <<< "$INPUT_BADGE_THRESHOLDS"
-        for _t in "${_thr[@]}"; do
-          _min=${_t%%:*}; _c=${_t#*:}
-          _min=$(printf '%s' "$_min" | tr -dc '0-9')
-          [ -n "$_min" ] || continue
-          if [ "$pi" -ge "$_min" ]; then col="$_c"; break; fi
-        done
-
-        val="${pct}%"
-        # ~6.5px per char at 11px + 20px side padding.
-        lw=$(awk -v n="${#label}" 'BEGIN{ w=n*6.5+20; printf "%d", (w<40?40:w) }')
-        vw=$(awk -v n="${#val}"   'BEGIN{ w=n*6.5+20; printf "%d", (w<40?40:w) }')
-        tw=$((lw + vw))
-        # Text centers and textLength, in x10-scaled units (shields trick).
-        lcx=$(awk -v w="$lw" 'BEGIN{ printf "%d", w*5 }')
-        vcx=$(awk -v l="$lw" -v v="$vw" 'BEGIN{ printf "%d", (l+v/2)*10 }')
-        ltl=$(awk -v w="$lw" 'BEGIN{ printf "%d", (w-20)*10 }')
-        vtl=$(awk -v w="$vw" 'BEGIN{ printf "%d", (w-14)*10 }')
-        esc() { printf '%s' "$1" | sed 's/&/\&amp;/g;s/</\&lt;/g;s/>/\&gt;/g'; }
-        elabel=$(esc "$label"); eval_=$(esc "$val")
-        # Fill the SVG template. Text substitutions (label/value) go last so an
-        # escaped '&' in them can't be reinterpreted by earlier sed passes.
-        sed \
-          -e "s/{{TW}}/$tw/g" \
-          -e "s/{{LW}}/$lw/g" \
-          -e "s/{{VW}}/$vw/g" \
-          -e "s/{{LCX}}/$lcx/g" \
-          -e "s/{{VCX}}/$vcx/g" \
-          -e "s/{{LTL}}/$ltl/g" \
-          -e "s/{{VTL}}/$vtl/g" \
-          -e "s|{{LCOL}}|$lcol|g" \
-          -e "s|{{COL}}|$col|g" \
-          "$GITHUB_ACTION_PATH/badge.svg.tmpl" \
-          | LABEL="$elabel" VAL="$eval_" perl -pe 's/\Q{{LABEL}}\E/$ENV{LABEL}/g; s/\Q{{VAL}}\E/$ENV{VAL}/g' \
-          > /tmp/coverage.svg
-
-        on_default=false
-        if [ "$INPUT_EVENT_NAME" = push ] && [ "$INPUT_REF_NAME" = "$INPUT_DEFAULT_BRANCH" ]; then
-          on_default=true
-        fi
-
-        # Default branch: publish the badge and update the baseline.
-        if [ "$on_default" = true ]; then
-          s5 cp --content-type image/svg+xml /tmp/coverage.svg "s3://$INPUT_BUCKET/coverage.svg"
-          printf '%s' "$pct" > /tmp/baseline.txt
-          s5 cp /tmp/baseline.txt "s3://$INPUT_BUCKET/coverage/baseline.txt"
-          echo "published badge + baseline ($pct%)"
-        fi
-
-        # Pull request: comment the delta, then optionally ratchet.
-        if [ "$INPUT_EVENT_NAME" = pull_request ] && [ -n "$INPUT_PR_NUMBER" ]; then
-          badge_line=""
-          [ -n "$INPUT_PUBLIC_URL" ] && badge_line="![coverage](${INPUT_PUBLIC_URL%/}/coverage.svg)"
-          marker="<!-- coverage-report -->"
-          body=$(printf '%s\n## Coverage: **%s%%**  (%s vs %s)\n\n%s\n' "$marker" "$pct" "$delta" "$INPUT_DEFAULT_BRANCH" "$badge_line")
-          if [ -n "$INPUT_TOKEN" ] && [ -n "$INPUT_SERVER_URL" ] && [ -n "$INPUT_REPO" ]; then
-            api="${INPUT_SERVER_URL%/}/repos/$INPUT_REPO/issues"
-            payload=$(INPUT_BODY="$body" python3 -c 'import json,os;print(json.dumps({"body":os.environ["INPUT_BODY"]}))' 2>/dev/null || printf '{"body":%s}' "\"$pct%\"")
-            # Update our existing marker comment if present, else create one.
-            existing=$(curl -fsS "$api/$INPUT_PR_NUMBER/comments" -H "Authorization: Bearer $INPUT_TOKEN" -H "Accept: application/vnd.github+json" 2>/dev/null \
-              | python3 -c 'import sys,json;print(next((str(c["id"]) for c in json.load(sys.stdin) if "<!-- coverage-report -->" in (c.get("body") or "")),""))' 2>/dev/null || true)
-            if [ -n "$existing" ]; then
-              curl -fsS -X PATCH "$api/comments/$existing" -H "Authorization: Bearer $INPUT_TOKEN" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" -d "$payload" >/dev/null && echo "updated PR comment" || echo "comment update failed (non-fatal)"
-            else
-              curl -fsS -X POST "$api/$INPUT_PR_NUMBER/comments" -H "Authorization: Bearer $INPUT_TOKEN" -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" -d "$payload" >/dev/null && echo "posted PR comment" || echo "comment post failed (non-fatal)"
-            fi
-          fi
-          if [ "$INPUT_RATCHET" = true ] && [ -n "$base" ]; then
-            floor=$(awk -v b="$base" -v t="$INPUT_TOLERANCE" 'BEGIN{printf "%.2f", b-t}')
-            if awk -v p="$pct" -v f="$floor" 'BEGIN{exit !(p < f)}'; then
-              echo "::error::coverage $pct% is below the ratchet floor $floor% (baseline $base% - ${INPUT_TOLERANCE}pt)"
-              exit 1
-            fi
-            echo "ratchet ok: $pct% >= $floor%"
-          fi
-        fi
+        git -C "$work" \
+          -c user.name="$INPUT_USER" -c user.email="$INPUT_EMAIL" \
+          commit -q -m "$INPUT_MESSAGE"
+        git -C "$work" -c http.extraheader="$auth" push -q origin "HEAD:$INPUT_BRANCH"
+        echo "coverage-report: published to $INPUT_BRANCH"
