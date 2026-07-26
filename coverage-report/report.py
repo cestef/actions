@@ -11,6 +11,7 @@ inputs. Adding a format is one class plus one line in `SOURCES`; adding a badge
 style is one class plus one line in `STYLES`.
 """
 
+import hashlib
 import json
 import os
 import sys
@@ -187,10 +188,29 @@ STYLES = {"flat": Flat, "gauge": Gauge}
 
 
 class Badge:
-    """An SVG badge. The bar geometry is delegated to a style from `STYLES`."""
+    """An SVG badge. The bar geometry is delegated to a style from `STYLES`.
 
-    HEIGHT, PADDING, FONT, RADIUS = 20, 10, 11, 4
-    CHAR = 6.6  # 11px DejaVu Sans averages ~6.6px per character.
+    Text is laid out from real font metrics and pinned with `textLength`, so the
+    result is identical whether the viewer resolves Verdana, DejaVu Sans or a
+    fallback: the glyphs adjust to the box rather than the box guessing at the
+    glyphs. Nothing is scaled, and no font is fetched.
+    """
+
+    HEIGHT, PADDING, FONT, RADIUS = 20, 10, 11, 3
+    BASELINE = 14  # 11px text sits optically centred in a 20px box here.
+
+    # Advance widths of printable ASCII in DejaVu Sans at 11px, measured from
+    # the font. Index is `ord(ch) - 32`; anything outside is charged as "M".
+    WIDTHS = (
+        3.5, 4.41, 5.06, 9.22, 7, 10.45, 8.58, 3.02, 4.29, 4.29, 5.5, 9.22, 3.5,
+        3.97, 3.5, 3.71, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 3.71, 3.71, 9.22, 9.22,
+        9.22, 5.84, 11, 7.53, 7.55, 7.68, 8.47, 6.95, 6.33, 8.52, 8.27, 3.24,
+        3.24, 7.21, 6.13, 9.49, 8.23, 8.66, 6.63, 8.66, 7.64, 6.98, 6.72, 8.05,
+        7.53, 10.88, 7.54, 6.72, 7.54, 4.29, 3.71, 4.29, 9.22, 5.5, 5.5, 6.74,
+        6.98, 6.05, 6.98, 6.77, 3.87, 6.98, 6.97, 3.06, 3.06, 6.37, 3.06, 10.72,
+        6.97, 6.73, 6.98, 6.98, 4.52, 5.73, 4.31, 6.97, 6.51, 9, 6.51, 6.51, 5.77,
+        7, 3.71, 7, 9.22
+    )
 
     def __init__(self, style, label, value, percent, color, label_color):
         self.style = style
@@ -207,8 +227,18 @@ class Badge:
         return cls(STYLES[name](), **kw)
 
     @classmethod
-    def width(cls, text):
-        return max(int(len(text) * cls.CHAR) + 2 * cls.PADDING, 34)
+    def text_width(cls, text):
+        """Rendered width of `text`, in px, at the badge font size."""
+        fallback = cls.WIDTHS[ord("M") - 32]
+        return sum(
+            cls.WIDTHS[ord(ch) - 32] if 32 <= ord(ch) < 127 else fallback
+            for ch in text
+        )
+
+    @classmethod
+    def slab(cls, text):
+        """Width of the half holding `text`, padded either side."""
+        return round(cls.text_width(text) + 2 * cls.PADDING, 1)
 
     @staticmethod
     def color_for(percent, thresholds, fallback="#e5534b"):
@@ -222,39 +252,49 @@ class Badge:
 
     @staticmethod
     def escape(text):
-        return (
-            text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        )
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-    def _text(self, centre, body, weight):
-        # Drawn twice: a translucent black copy one unit lower is the drop shadow
-        # that keeps light label colors legible.
-        x = round(centre * 10)
+    def _text(self, centre, body, raw, weight):
+        # Drawn twice: a translucent black copy one pixel lower is the drop
+        # shadow that keeps white text legible over a light fill.
+        length = round(self.text_width(raw), 1)
+        common = (
+            f'text-anchor="middle" textLength="{length}" '
+            f'lengthAdjust="spacingAndGlyphs" font-weight="{weight}"'
+        )
+        x = round(centre, 1)
         return (
-            f'<text x="{x}" y="140" fill="#010101" fill-opacity=".3" '
-            f'transform="scale(.1)" font-weight="{weight}">{body}</text>'
-            f'<text x="{x}" y="130" fill="#fff" transform="scale(.1)" '
-            f'font-weight="{weight}">{body}</text>'
+            f'<text x="{x}" y="{self.BASELINE + 1}" fill="#010101" '
+            f'fill-opacity=".25" {common}>{body}</text>'
+            f'<text x="{x}" y="{self.BASELINE}" fill="#fff" {common}>{body}</text>'
         )
 
     def render(self):
         label, value = self.escape(self.label), self.escape(self.value)
-        label_w, value_w = self.width(self.label), self.width(self.value)
-        width, height = label_w + value_w, self.HEIGHT
+        label_w, value_w = self.slab(self.label), self.slab(self.value)
+        width, height = round(label_w + value_w, 1), self.HEIGHT
         bars = self.style.bars(
             (label_w, value_w, self.percent, height, self.color, self.label_color)
         )
+        # The id is per-badge, so two badges inlined in one document do not share
+        # a clip path. Derived from a stable digest rather than hash(), which is
+        # salted per process and would change the bytes on every run.
+        digest = hashlib.sha1(f"{self.label}\x00{self.value}".encode()).hexdigest()
+        cid = f"c{digest[:8]}"
         return (
             f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}"'
-            f' role="img" aria-label="{label}: {value}">'
+            f' viewBox="0 0 {width} {height}" role="img"'
+            f' aria-label="{label}: {value}">'
             f"<title>{label}: {value}</title>"
-            f'<clipPath id="r"><rect width="{width}" height="{height}" rx="{self.RADIUS}"/></clipPath>'
-            f'<g clip-path="url(#r)">{bars}'
-            f'<rect y="{height - 1}" width="{width}" height="1" fill="#000" fill-opacity=".25"/></g>'
-            f'<g font-family="Verdana,DejaVu Sans,Geneva,sans-serif" font-size="{self.FONT}"'
-            f' text-anchor="middle">'
-            f"{self._text(label_w / 2, label, 'normal')}"
-            f"{self._text(label_w + value_w / 2, value, 'bold')}"
+            f'<clipPath id="{cid}">'
+            f'<rect width="{width}" height="{height}" rx="{self.RADIUS}"/></clipPath>'
+            f'<g clip-path="url(#{cid})" shape-rendering="crispEdges">{bars}'
+            f'<rect y="{height - 1}" width="{width}" height="1" fill="#000"'
+            f' fill-opacity=".2"/></g>'
+            f'<g font-family="Verdana,DejaVu Sans,Noto Sans,Geneva,sans-serif"'
+            f' font-size="{self.FONT}">'
+            f"{self._text(label_w / 2, label, self.label, 'normal')}"
+            f"{self._text(label_w + value_w / 2, value, self.value, 'bold')}"
             f"</g></svg>\n"
         )
 

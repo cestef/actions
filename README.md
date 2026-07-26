@@ -125,6 +125,10 @@ key warns and moves on, so target/ is uploaded once per `Cargo.lock` + rustc.
 Caches are scoped by branch: a PR reads the base branch's entries but writes only its
 own, and GitHub evicts least-recently-used past 10 GB per repository.
 
+A cache key can be reserved once, so two jobs in the same run that would save the
+*same* key race and the loser logs `Cache save failed`. Give each job its own
+`prefix`, or have exactly one job save a cache the others only restore.
+
 ## binstall
 
 Installs [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) from a pinned

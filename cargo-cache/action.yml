@@ -72,7 +72,7 @@ runs:
 
     - id: restore
       if: inputs.mode != 'save'
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         path: ${{ steps.plan.outputs.paths }}
         key: ${{ steps.plan.outputs.key }}
@@ -80,7 +80,7 @@ runs:
     # Keys are immutable: `actions/cache/save` warns and moves on when the key
     # already exists, which is the intended "already cached, skip" path.
     - if: inputs.mode == 'save'
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v6
       with:
         path: ${{ steps.plan.outputs.paths }}
         key: ${{ steps.plan.outputs.key }}

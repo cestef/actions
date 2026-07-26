@@ -46,7 +46,7 @@ runs:
     # Restores before the install below and saves in the job's post phase, so a
     # miss populates the cache without a second call.
     - if: inputs.cache == 'true'
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ${{ steps.plan.outputs.dir }}
         key: ${{ steps.plan.outputs.key }}
