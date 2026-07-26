@@ -158,38 +158,12 @@ runs:
         && steps.report.outputs.changed == 'true'
       shell: bash
       env:
-        INPUT_BRANCH: ${{ inputs.branch }}
-        INPUT_TOKEN: ${{ inputs.token }}
-        INPUT_REPO: ${{ inputs.repo }}
-        INPUT_GIT_URL: ${{ inputs.git-url }}
-        INPUT_MESSAGE: ${{ inputs.commit-message }}
-        INPUT_USER: ${{ inputs.commit-user }}
-        INPUT_EMAIL: ${{ inputs.commit-email }}
-        STAGE: ${{ steps.report.outputs.stage }}
-      run: |
-        set -euo pipefail
-        # The token goes in a header rather than the remote URL, so it cannot be
-        # echoed back by git's own error messages.
-        auth="AUTHORIZATION: Basic $(printf 'x-access-token:%s' "$INPUT_TOKEN" | base64 -w0)"
-        remote="${INPUT_GIT_URL%/}/$INPUT_REPO.git"
-
-        work=$(mktemp -d)
-        git init -q -b "$INPUT_BRANCH" "$work"
-        git -C "$work" remote add origin "$remote"
-        # An existing branch is extended; a missing one starts as a fresh orphan,
-        # so the badge branch never carries the repository's own history.
-        if git -C "$work" -c http.extraheader="$auth" fetch -q --depth 1 origin "$INPUT_BRANCH"; then
-          git -C "$work" reset -q --hard FETCH_HEAD
-        fi
-
-        cp -R "$STAGE"/. "$work"/
-        git -C "$work" add -A
-        if git -C "$work" diff --cached --quiet; then
-          echo "coverage-report: badge and baseline unchanged"
-          exit 0
-        fi
-        git -C "$work" \
-          -c user.name="$INPUT_USER" -c user.email="$INPUT_EMAIL" \
-          commit -q -m "$INPUT_MESSAGE"
-        git -C "$work" -c http.extraheader="$auth" push -q origin "HEAD:$INPUT_BRANCH"
-        echo "coverage-report: published to $INPUT_BRANCH"
+        PUBLISH_BRANCH: ${{ inputs.branch }}
+        PUBLISH_TOKEN: ${{ inputs.token }}
+        PUBLISH_REPO: ${{ inputs.repo }}
+        PUBLISH_GIT_URL: ${{ inputs.git-url }}
+        PUBLISH_MESSAGE: ${{ inputs.commit-message }}
+        PUBLISH_USER: ${{ inputs.commit-user }}
+        PUBLISH_EMAIL: ${{ inputs.commit-email }}
+        PUBLISH_STAGE: ${{ steps.report.outputs.stage }}
+      run: bash "$GITHUB_ACTION_PATH/../_lib/publish.sh"

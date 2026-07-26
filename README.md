@@ -182,6 +182,35 @@ reads either format.
 Note it needs the `llvm-tools-preview` rustup component; the `rust` action takes a
 `components` input for exactly this.
 
+## badge
+
+Renders an SVG badge and publishes it to an orphan branch of the repo itself — same
+renderer as [coverage-report](#coverage-report), so every badge in a repo matches. No
+bucket, no external service, and no commit when the value has not moved.
+
+```yaml
+- uses: cestef/actions/badge@github
+  with:
+    label: binary
+    value: "23.4 MB"
+    color: "#58a6ff"        # or omit and pass `percent` to colour by threshold
+    file: binary-size.svg
+    token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+Serve it from `https://raw.githubusercontent.com/<owner>/<repo>/badges/<file>`; the
+action also returns the URL as the `url` output, and `changed` for whether it moved.
+
+Pass `percent` when the value is a proportion — the meter fills accordingly and
+`thresholds` picks the colour. Without it the rule is drawn full in a fixed `color`.
+
+Publishing follows the same rule as coverage-report, plus tags: a pull request never
+publishes, the default branch and tag builds do. The job needs
+`permissions: { contents: write }`.
+
+Several badges in one run push to the same branch, so the publisher retries on
+contention rather than failing.
+
 ## coverage-report
 
 Reads a coverage report and produces four things from that one parse, so they can never

@@ -1,0 +1,113 @@
+name: "badge"
+description: "Render an SVG badge and publish it to an orphan branch of the repo itself. Same renderer as coverage-report, so every badge in a repo matches. No bucket, no external service, and no commit when the value has not moved."
+inputs:
+  label:
+    description: "Left-hand text, e.g. 'binary'."
+    required: true
+  value:
+    description: "Right-hand text, e.g. '23.4 MB'."
+    required: true
+  color:
+    description: "Accent colour. Empty picks from `thresholds` using `percent`."
+    default: ""
+  percent:
+    description: "Optional proportion 0-100. Drives the meter/gauge fill and the threshold colour. Empty renders a full bar in a fixed colour."
+    default: ""
+  thresholds:
+    description: "Comma list of min-percent:color, highest first. Only consulted when `color` is empty."
+    default: "90:#3fb950,75:#7bc62d,60:#d5b60a,40:#e0902f,0:#e5534b"
+  style:
+    description: "meter, gauge or flat."
+    default: "meter"
+  label-color:
+    default: "#24292f"
+
+  file:
+    description: "Filename on the branch, e.g. 'binary-size.svg'."
+    default: "badge.svg"
+  branch:
+    default: "badges"
+  path-prefix:
+    description: "Subdirectory within the branch, so one branch can host several projects."
+    default: ""
+  publish:
+    description: "Push the badge. Only ever happens off a pull request."
+    default: "true"
+
+  token:
+    description: "Token with contents:write. Without it the badge is rendered and staged but not published."
+    default: ""
+  repo:
+    default: ${{ github.repository }}
+  server-url:
+    default: ${{ github.api_url }}
+  raw-url:
+    default: "https://raw.githubusercontent.com"
+  git-url:
+    default: ${{ github.server_url }}
+  event-name:
+    default: ${{ github.event_name }}
+  ref-name:
+    default: ${{ github.ref_name }}
+  ref-type:
+    description: "branch or tag. A tag build publishes too: releasing is a legitimate reason to move a badge."
+    default: ${{ github.ref_type }}
+  default-branch:
+    default: "main"
+  commit-message:
+    default: "chore: badge"
+  commit-user:
+    default: "github-actions[bot]"
+  commit-email:
+    default: "41898282+github-actions[bot]@users.noreply.github.com"
+
+outputs:
+  changed:
+    description: "true when the rendered badge differs from what is published."
+    value: ${{ steps.render.outputs.changed }}
+  url:
+    description: "Raw URL the badge will be served from."
+    value: ${{ steps.render.outputs.url }}
+
+runs:
+  using: composite
+  steps:
+    - id: render
+      shell: bash
+      env:
+        INPUT_LABEL: ${{ inputs.label }}
+        INPUT_VALUE: ${{ inputs.value }}
+        INPUT_COLOR: ${{ inputs.color }}
+        INPUT_PERCENT: ${{ inputs.percent }}
+        INPUT_THRESHOLDS: ${{ inputs.thresholds }}
+        INPUT_STYLE: ${{ inputs.style }}
+        INPUT_LABEL_COLOR: ${{ inputs.label-color }}
+        INPUT_FILE: ${{ inputs.file }}
+        INPUT_BRANCH: ${{ inputs.branch }}
+        INPUT_PATH_PREFIX: ${{ inputs.path-prefix }}
+        INPUT_TOKEN: ${{ inputs.token }}
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_SERVER_URL: ${{ inputs.server-url }}
+        INPUT_RAW_URL: ${{ inputs.raw-url }}
+        INPUT_STAGE: ${{ runner.temp }}/badge-${{ inputs.file }}
+      run: python3 "$GITHUB_ACTION_PATH/render.py"
+
+    # A pull request may render a badge but never moves what is published.
+    # Default-branch and tag builds both may: a release is exactly when a
+    # version or binary-size badge should change.
+    - if: >-
+        inputs.publish == 'true' && inputs.token != ''
+        && inputs.event-name != 'pull_request'
+        && (inputs.ref-type == 'tag' || inputs.ref-name == inputs.default-branch)
+        && steps.render.outputs.changed == 'true'
+      shell: bash
+      env:
+        PUBLISH_BRANCH: ${{ inputs.branch }}
+        PUBLISH_TOKEN: ${{ inputs.token }}
+        PUBLISH_REPO: ${{ inputs.repo }}
+        PUBLISH_GIT_URL: ${{ inputs.git-url }}
+        PUBLISH_MESSAGE: ${{ inputs.commit-message }}
+        PUBLISH_USER: ${{ inputs.commit-user }}
+        PUBLISH_EMAIL: ${{ inputs.commit-email }}
+        PUBLISH_STAGE: ${{ steps.render.outputs.stage }}
+      run: bash "$GITHUB_ACTION_PATH/../_lib/publish.sh"
