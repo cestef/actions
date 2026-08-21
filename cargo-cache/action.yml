@@ -8,10 +8,16 @@ inputs:
     description: "Key prefix. Also namespaces the cache, so use distinct prefixes for the registry and the target/ caches."
     default: "cargo-cache"
   key:
-    description: "Cache key override. Default: a hash of Cargo.lock (plus the rustc version when toolchain-key is true)."
+    description: "Cache key override. Default: a hash of Cargo.lock, behind the rustc version when toolchain-key is true."
     default: ""
   toolchain-key:
     description: "Mix the rustc version into the default key. Set true for target/ (artifacts are toolchain-specific); leave false for the registry."
+    default: "false"
+  fallback:
+    description: "On an exact-key miss, restore the newest cache sharing everything but the Cargo.lock hash. Set false to demand an exact match."
+    default: "true"
+  prune:
+    description: "Before saving, drop what the next build rebuilds from source anyway: linked executables, incremental state, and every workspace crate's own artifacts. For target/ caches."
     default: "false"
   base:
     description: "Directory the paths are relative to. Empty means $HOME."
@@ -35,40 +41,50 @@ runs:
         INPUT_PREFIX: ${{ inputs.prefix }}
         INPUT_KEY: ${{ inputs.key }}
         INPUT_TOOLCHAIN_KEY: ${{ inputs.toolchain-key }}
+        INPUT_FALLBACK: ${{ inputs.fallback }}
         INPUT_BASE: ${{ inputs.base }}
         INPUT_PATHS: ${{ inputs.paths }}
       run: |
         set -euo pipefail
         base="${INPUT_BASE:-$HOME}"
+        short() { sha256sum | cut -c1-16; }
 
-        key="$INPUT_KEY"
-        if [ -z "$key" ]; then
-          material=""
-          # Compiled artifacts are toolchain-specific, so the rustc version joins the key.
-          if [ "$INPUT_TOOLCHAIN_KEY" = true ]; then
-            material="$(rustc -vV 2>/dev/null || echo no-rustc)"
-          fi
-          [ -f Cargo.lock ] && material="$material$(cat Cargo.lock)"
-          if [ -n "$material" ]; then
-            key=$(printf '%s' "$material" | sha256sum | cut -c1-16)
-          else
-            key=nolock
-          fi
-        fi
         # One cache is shared by every runner on the repo, so the OS and arch
         # belong in the key: an aarch64 target/ is not restorable on amd64.
-        full="$INPUT_PREFIX-$(uname -s)-$(uname -m)-$key"
+        stem="$INPUT_PREFIX-$(uname -s)-$(uname -m)"
+        # Compiled artifacts are toolchain-specific, so the rustc version joins
+        # the stem rather than the tail: a fallback restore must never hand a
+        # build artifacts from another compiler.
+        if [ "$INPUT_TOOLCHAIN_KEY" = true ]; then
+          stem="$stem-$( { rustc -vV 2>/dev/null || echo no-rustc; } | short)"
+        fi
+
+        if [ -n "$INPUT_KEY" ]; then
+          full="$stem-$INPUT_KEY"
+          # An overridden key names one cache exactly; there is no series to
+          # fall back within.
+          restore_keys=""
+        else
+          if [ -f Cargo.lock ]; then tail=$(short < Cargo.lock); else tail=nolock; fi
+          full="$stem-$tail"
+          # Everything but the lock hash. The newest cache under it is last
+          # run's tree, so a lock bump recompiles the crates that moved rather
+          # than all of them.
+          restore_keys=""
+          if [ "$INPUT_FALLBACK" = true ]; then restore_keys="$stem-"; fi
+        fi
 
         # Random delimiter, so a path containing the terminator cannot inject
         # extra GITHUB_OUTPUT entries.
         d="__ghout_$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
         {
           printf 'key=%s\n' "$full"
+          printf 'restore-keys=%s\n' "$restore_keys"
           printf 'paths<<%s\n' "$d"
           for p in $INPUT_PATHS; do printf '%s/%s\n' "$base" "$p"; done
           printf '%s\n' "$d"
         } >> "$GITHUB_OUTPUT"
-        echo "cargo-cache: $INPUT_MODE key=$full"
+        echo "cargo-cache: $INPUT_MODE key=$full fallback=${restore_keys:-none}"
 
     - id: restore
       if: inputs.mode != 'save'
@@ -76,6 +92,66 @@ runs:
       with:
         path: ${{ steps.plan.outputs.paths }}
         key: ${{ steps.plan.outputs.key }}
+        restore-keys: ${{ steps.plan.outputs.restore-keys }}
+
+    # A linked test binary is hundreds of megabytes and is relinked on every
+    # source edit, so caching one costs upload and restore time to save
+    # nothing. Dependency rlibs, build-script outputs and the fingerprint DB
+    # are what a warm build actually reuses, and they are what stays.
+    - if: inputs.mode == 'save' && inputs.prune == 'true'
+      shell: bash
+      env:
+        INPUT_BASE: ${{ inputs.base }}
+        INPUT_PATHS: ${{ inputs.paths }}
+      run: |
+        set -euo pipefail
+        base="${INPUT_BASE:-$HOME}"
+
+        # The workspace's own package names, hyphens normalized to the
+        # underscores cargo puts in artifact filenames. Package names only:
+        # target names include whatever the benches are called, and a
+        # dependency that happened to share one would be swept by mistake.
+        # Absent jq the sweep still runs; it just leaves the workspace's own
+        # rlibs in.
+        members=""
+        if command -v jq >/dev/null 2>&1; then
+          members=$(cargo metadata --format-version 1 --no-deps 2>/dev/null \
+            | jq -r '.packages[].name' | tr '-' '_' | sort -u) || members=""
+        fi
+
+        sweep() {
+          local profile="$1"
+          [ -d "$profile" ] || return 0
+          rm -rf "$profile/incremental" "$profile/examples"
+          # Cargo's uplifted copies of what it just linked, at the profile root.
+          # Only regular files: every directory here is one this sweep either
+          # keeps whole or handles on its own.
+          find "$profile" -maxdepth 1 -type f -delete
+          # Everything cargo links rather than archives: test harnesses, the
+          # binaries, build-script drivers. Shared objects stay, being the
+          # proc-macro crates.
+          if [ -d "$profile/deps" ]; then
+            find "$profile/deps" -maxdepth 1 -type f \
+              ! -name '*.rlib' ! -name '*.rmeta' ! -name '*.d' ! -name '*.so' \
+              ! -name '*.dylib' ! -name '*.dll' ! -name '*.a' ! -name '*.lib' \
+              -delete
+          fi
+          for name in $members; do
+            rm -f "$profile/deps/lib$name-"*.rlib "$profile/deps/lib$name-"*.rmeta
+          done
+        }
+
+        for p in $INPUT_PATHS; do
+          dir="$base/$p"
+          [ -d "$dir" ] || continue
+          before=$(du -sm "$dir" | cut -f1)
+          # A target directory holds one directory per profile, plus one per
+          # cross-compiled target holding the same again.
+          for profile in "$dir"/*/ "$dir"/*/*/; do
+            if [ -d "$profile.fingerprint" ]; then sweep "${profile%/}"; fi
+          done
+          echo "cargo-cache: pruned $dir, ${before}MB -> $(du -sm "$dir" | cut -f1)MB"
+        done
 
     # Keys are immutable: `actions/cache/save` warns and moves on when the key
     # already exists, which is the intended "already cached, skip" path.
