@@ -83,10 +83,13 @@ runs:
         if [ -n "$INPUT_FAIL_UNDER" ]; then fu="--fail-under-lines $INPUT_FAIL_UNDER"; fi
 
         # One instrumented run produces both the machine report and the summary
-        # the percentage is read from, so the two can never disagree.
+        # the percentage is read from, so the two can never disagree: `report`
+        # re-renders the profile data the run already collected. It takes the
+        # reporting options only, never the run's own (`--workspace` and the
+        # rest select what to *build*, and `report` builds nothing).
         cargo llvm-cov "$sub" $fmt --output-path "$INPUT_OUTPUT" \
           $ignore $fu $INPUT_ARGS
-        cargo llvm-cov report --summary-only $ignore $INPUT_ARGS 2>&1 | tee /tmp/llvm-cov.out
+        cargo llvm-cov report --summary-only $ignore 2>&1 | tee /tmp/llvm-cov.out
 
         # The TOTAL row's last percentage is the line-coverage figure.
         pct=$(awk '/^TOTAL/ { for (i=NF; i>0; i--) if ($i ~ /%$/) { gsub(/%/,"",$i); print $i; exit } }' /tmp/llvm-cov.out)
