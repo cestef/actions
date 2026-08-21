@@ -94,15 +94,26 @@ runs:
         key: ${{ steps.plan.outputs.key }}
         restore-keys: ${{ steps.plan.outputs.restore-keys }}
 
-    # A linked test binary is hundreds of megabytes and is relinked on every
-    # source edit, so caching one costs upload and restore time to save
-    # nothing. Dependency rlibs, build-script outputs and the fingerprint DB
-    # are what a warm build actually reuses, and they are what stays.
-    - if: inputs.mode == 'save' && inputs.prune == 'true'
+    # Save-time preparation, in two parts.
+    #
+    # Pruning, when asked: a linked test binary is hundreds of megabytes and is
+    # relinked on every source edit, so caching one costs upload and restore
+    # time to save nothing. Dependency rlibs, build-script outputs and the
+    # fingerprint DB are what a warm build actually reuses, and they stay.
+    #
+    # Then the emptiness verdict, always. A key is immutable, so a job that
+    # died before it compiled anything would write an empty tree that every
+    # later run restores as a hit and never replaces: one cold build becomes
+    # every build until Cargo.lock next moves. Refusing here rather than in the
+    # caller's `if:` is what lets a *failed* job still save the tree it did
+    # build, which for an hour-long instrumented run is most of the value.
+    - id: prepare
+      if: inputs.mode == 'save'
       shell: bash
       env:
         INPUT_BASE: ${{ inputs.base }}
         INPUT_PATHS: ${{ inputs.paths }}
+        INPUT_PRUNE: ${{ inputs.prune }}
       run: |
         set -euo pipefail
         base="${INPUT_BASE:-$HOME}"
@@ -141,21 +152,33 @@ runs:
           done
         }
 
+        total=0
         for p in $INPUT_PATHS; do
           dir="$base/$p"
           [ -d "$dir" ] || continue
           before=$(du -sm "$dir" | cut -f1)
-          # A target directory holds one directory per profile, plus one per
-          # cross-compiled target holding the same again.
-          for profile in "$dir"/*/ "$dir"/*/*/; do
-            if [ -d "$profile.fingerprint" ]; then sweep "${profile%/}"; fi
-          done
-          echo "cargo-cache: pruned $dir, ${before}MB -> $(du -sm "$dir" | cut -f1)MB"
+          if [ "$INPUT_PRUNE" = true ]; then
+            # A target directory holds one directory per profile, plus one per
+            # cross-compiled target holding the same again.
+            for profile in "$dir"/*/ "$dir"/*/*/; do
+              if [ -d "$profile.fingerprint" ]; then sweep "${profile%/}"; fi
+            done
+            echo "cargo-cache: pruned $dir, ${before}MB -> $(du -sm "$dir" | cut -f1)MB"
+          fi
+          total=$(( total + $(du -sm "$dir" | cut -f1) ))
         done
+
+        if [ "$total" -lt 1 ]; then
+          echo "cargo-cache: nothing to save, skipping so the key stays free"
+          printf 'empty=true\n' >> "$GITHUB_OUTPUT"
+        else
+          echo "cargo-cache: saving ${total}MB"
+          printf 'empty=false\n' >> "$GITHUB_OUTPUT"
+        fi
 
     # Keys are immutable: `actions/cache/save` warns and moves on when the key
     # already exists, which is the intended "already cached, skip" path.
-    - if: inputs.mode == 'save'
+    - if: inputs.mode == 'save' && steps.prepare.outputs.empty != 'true'
       uses: actions/cache/save@v6
       with:
         path: ${{ steps.plan.outputs.paths }}
