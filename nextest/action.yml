@@ -39,20 +39,7 @@ runs:
         set -euo pipefail
         source "$GITHUB_ACTION_PATH/../_lib/common.sh"
 
-        if ! command -v cargo-nextest >/dev/null; then
-          case "$(uname -s)-$(uname -m)" in
-            Linux-aarch64|Linux-arm64) slug=linux-arm-musl ;;
-            Linux-x86_64|Linux-amd64)  slug=linux-musl ;;
-            Darwin-*)                  slug=mac ;;
-            *) echo "unsupported platform: $(uname -s)-$(uname -m)"; exit 1 ;;
-          esac
-          dest="$HOME/.cargo/bin"; mkdir -p "$dest"
-          # Only the version tag flows into the URL; validate it's a plausible channel/tag.
-          wa_check_version "$INPUT_VERSION"
-          curl -fsSL "https://get.nexte.st/$INPUT_VERSION/$slug" \
-            | tar -xz -C "$dest" cargo-nextest
-          echo "$dest" >> "$GITHUB_PATH"
-        fi
+        wa_install_nextest "$INPUT_VERSION"
         cargo nextest --version
 
         if [ "$INPUT_RUN" != "true" ]; then

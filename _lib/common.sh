@@ -18,3 +18,24 @@ wa_arch() {
     *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
   esac
 }
+
+# Install cargo-nextest onto PATH if it is not already there. $1 is the version
+# channel or tag ("latest", "0.9.100").
+wa_install_nextest() {
+  if command -v cargo-nextest >/dev/null; then
+    return 0
+  fi
+  local slug dest
+  case "$(uname -s)-$(uname -m)" in
+    Linux-aarch64|Linux-arm64) slug=linux-arm-musl ;;
+    Linux-x86_64|Linux-amd64)  slug=linux-musl ;;
+    Darwin-*)                  slug=mac ;;
+    *) echo "unsupported platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
+  esac
+  dest="$HOME/.cargo/bin"; mkdir -p "$dest"
+  # Only the version tag flows into the URL; validate it's a plausible channel/tag.
+  wa_check_version "$1"
+  curl -fsSL "https://get.nexte.st/$1/$slug" | tar -xz -C "$dest" cargo-nextest
+  echo "$dest" >> "$GITHUB_PATH"
+  export PATH="$dest:$PATH"
+}

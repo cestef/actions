@@ -10,6 +10,9 @@ inputs:
   runner:
     description: "test (cargo llvm-cov test) or nextest (cargo llvm-cov nextest)."
     default: "nextest"
+  nextest-version:
+    description: "cargo-nextest version channel or tag, installed when runner is nextest."
+    default: "latest"
   format:
     description: "cobertura or lcov."
     default: "cobertura"
@@ -38,6 +41,7 @@ runs:
         INPUT_VERSION: ${{ inputs.version }}
         INPUT_ARGS: ${{ inputs.args }}
         INPUT_RUNNER: ${{ inputs.runner }}
+        INPUT_NEXTEST_VERSION: ${{ inputs.nextest-version }}
         INPUT_FORMAT: ${{ inputs.format }}
         INPUT_OUTPUT: ${{ inputs.output }}
         INPUT_IGNORE: ${{ inputs.ignore }}
@@ -66,7 +70,10 @@ runs:
           *) echo "llvm-cov: unknown format '$INPUT_FORMAT' (cobertura|lcov)"; exit 1 ;;
         esac
         case "$INPUT_RUNNER" in
-          nextest) sub="nextest" ;;
+          # cargo-llvm-cov shells out to it, so naming it here is what puts it
+          # on PATH: a caller should not need a second action to make this
+          # input mean anything.
+          nextest) sub="nextest"; wa_install_nextest "$INPUT_NEXTEST_VERSION" ;;
           test)    sub="test" ;;
           *) echo "llvm-cov: unknown runner '$INPUT_RUNNER' (test|nextest)"; exit 1 ;;
         esac
