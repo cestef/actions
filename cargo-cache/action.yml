@@ -17,8 +17,11 @@ inputs:
     description: "On an exact-key miss, restore the newest cache sharing everything but the Cargo.lock hash. Set false to demand an exact match."
     default: "true"
   prune:
-    description: "Before saving, drop what the next build rebuilds from source anyway: linked executables, incremental state, and every workspace crate's own artifacts. For target/ caches."
+    description: "Before saving, drop what the next build rebuilds from source anyway: linked executables, incremental state, raw coverage profiles, and every workspace crate's own artifacts. For target/ caches."
     default: "false"
+  max-size:
+    description: "Refuse to save a tree larger than this many MB. One job's oversized cache evicts every other job's under the repository's shared quota, so the ceiling is a guard on the neighbours, not on this job. 0 disables it."
+    default: "8000"
   base:
     description: "Directory the paths are relative to. Empty means $HOME."
     default: ""
@@ -114,6 +117,7 @@ runs:
         INPUT_BASE: ${{ inputs.base }}
         INPUT_PATHS: ${{ inputs.paths }}
         INPUT_PRUNE: ${{ inputs.prune }}
+        INPUT_MAX_SIZE: ${{ inputs.max-size }}
       run: |
         set -euo pipefail
         base="${INPUT_BASE:-$HOME}"
@@ -158,6 +162,12 @@ runs:
           [ -d "$dir" ] || continue
           before=$(du -sm "$dir" | cut -f1)
           if [ "$INPUT_PRUNE" = true ]; then
+            # Raw coverage profiles: this run's own measurements, written once
+            # per instrumented *process*, so a suite that spawns the binary
+            # per test leaves tens of gigabytes of them. They are regenerated
+            # on every run and merged fresh, so they are never reusable, and
+            # caching them once cost this repo its whole cache budget.
+            find "$dir" -type f \( -name '*.profraw' -o -name '*.profdata' \) -delete
             # A target directory holds one directory per profile, plus one per
             # cross-compiled target holding the same again.
             for profile in "$dir"/*/ "$dir"/*/*/; do
@@ -170,6 +180,10 @@ runs:
 
         if [ "$total" -lt 1 ]; then
           echo "cargo-cache: nothing to save, skipping so the key stays free"
+          printf 'empty=true\n' >> "$GITHUB_OUTPUT"
+        elif [ "$INPUT_MAX_SIZE" -gt 0 ] && [ "$total" -gt "$INPUT_MAX_SIZE" ]; then
+          echo "::warning::cargo-cache: ${total}MB exceeds the ${INPUT_MAX_SIZE}MB ceiling, not saving"
+          echo "cargo-cache: something in $INPUT_PATHS is not being pruned; saving it would evict every other cache in the repository"
           printf 'empty=true\n' >> "$GITHUB_OUTPUT"
         else
           echo "cargo-cache: saving ${total}MB"
